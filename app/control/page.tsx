@@ -1,11 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import TrafficMap from '@/components/TrafficMap';
 
 interface Ambulance {
   id: string;
   name: string;
   vehicle_no: string;
+  hospital_name?: string;
   status: 'red' | 'yellow' | 'green';
   lat: number;
   lng: number;
@@ -215,6 +217,68 @@ export default function ControlRoomPage() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {/* Live Traffic Map - All Ambulances */}
+        {ambulances.length > 0 && (
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-gray-900">🗺️ Live Ambulance Tracking Map</h2>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                  <span className="text-gray-600">Real-time traffic</span>
+                </div>
+                <div className="text-sm text-gray-600">
+                  {ambulances.length} active ambulance{ambulances.length !== 1 ? 's' : ''}
+                </div>
+              </div>
+            </div>
+            <TrafficMap
+              center={
+                ambulances.length > 0
+                  ? { lat: ambulances[0].lat, lng: ambulances[0].lng }
+                  : { lat: 13.0827, lng: 80.2707 }
+              }
+              zoom={12}
+              ambulances={ambulances}
+              showTraffic={true}
+              height="600px"
+            />
+            
+            {/* Traffic Severity Summary */}
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">🟢</span>
+                  <div>
+                    <p className="text-sm text-gray-600">Low Traffic</p>
+                    <p className="text-lg font-bold text-green-700">Smooth Flow</p>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">🟡</span>
+                  <div>
+                    <p className="text-sm text-gray-600">Medium Traffic</p>
+                    <p className="text-lg font-bold text-yellow-700">Some Delays</p>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">🔴</span>
+                  <div>
+                    <p className="text-sm text-gray-600">Heavy Traffic</p>
+                    <p className="text-lg font-bold text-red-700">Congestion</p>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}

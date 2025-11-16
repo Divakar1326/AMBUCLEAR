@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
     const lngStr = searchParams.get('lng');
     const radiusStr = searchParams.get('radius') || '10000'; // 10km default
 
-    const ambulances = getAmbulances();
+    const ambulances = await getAmbulances();
 
     let filtered = ambulances;
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getControlRoomRecommendations } from '@/lib/groqAI';
+import { getControlRoomRecommendations, AmbulanceData } from '@/lib/groqAI';
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,15 +13,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get AI recommendations for traffic clearance
-    const recommendation = await getControlRoomRecommendations(
-      {
+    // Format ambulance data for AI analysis
+    const ambulances: AmbulanceData[] = [{
+      id: 'AMB-001',
+      position: {
         lat: ambulance.lat,
         lng: ambulance.lng,
-        status: ambulance.status || 'red',
       },
-      nearbyCars || []
+      heading: 0,
+      status: (ambulance.status?.toUpperCase() || 'RED') as 'RED' | 'YELLOW' | 'GREEN',
+    }];
+
+    // Get AI recommendations for traffic clearance
+    const recommendations = await getControlRoomRecommendations(
+      ambulances,
+      [] // SOS alerts
     );
+
+    const recommendation = recommendations.length > 0 
+      ? recommendations[0].action + ' ' + recommendations[0].reason
+      : 'Monitor traffic conditions and clear routes as needed.';
 
     return NextResponse.json({
       success: true,

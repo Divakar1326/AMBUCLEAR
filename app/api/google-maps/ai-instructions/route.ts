@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
       data: {
         ...instructions,
         voiceInstruction,
-        aiProvider: aiConfig.provider || 'fallback'
+        aiProvider: 'groq'
       }
     });
   } catch (error: any) {

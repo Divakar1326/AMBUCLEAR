@@ -1082,7 +1082,7 @@ We welcome contributions from the community! Here's how you can help:
 
 ### 🚑 **Every Second Counts. Every Life Matters.** 🚑
 
-**Built with ❤️ for emergency response by [Divakar M] [Neha S](https://github.com/Divakar1326)**
+**Built with ❤️ for emergency response by [Divakar M] & [Neha S](https://github.com/Divakar1326)**
 
 *Give way to ambulances, save lives together* 🙏
 

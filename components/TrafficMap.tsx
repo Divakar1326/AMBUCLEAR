@@ -46,10 +46,10 @@ export default function TrafficMap({
   height = '600px'
 }: TrafficMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
-  const [map, setMap] = useState<google.maps.Map | null>(null);
-  const [trafficLayer, setTrafficLayer] = useState<google.maps.TrafficLayer | null>(null);
-  const [markers, setMarkers] = useState<google.maps.Marker[]>([]);
-  const [routeLine, setRouteLine] = useState<google.maps.Polyline | null>(null);
+  const [map, setMap] = useState<any | null>(null);
+  const [trafficLayer, setTrafficLayer] = useState<any | null>(null);
+  const [markers, setMarkers] = useState<any[]>([]);
+  const [routeLine, setRouteLine] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [trafficInfo, setTrafficInfo] = useState<string>('');
 

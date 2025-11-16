@@ -34,6 +34,7 @@ interface TrafficMapProps {
   height?: string;
   selectedHospital?: Hospital;
   onRouteCalculated?: (routeData: any) => void;
+  status?: 'red' | 'yellow' | 'green';
 }
 
 // Global flag to track if Google Maps script is loaded
@@ -53,7 +54,8 @@ export default function TrafficMap({
   currentLocation,
   height = '500px',
   selectedHospital,
-  onRouteCalculated
+  onRouteCalculated,
+  status = 'green'
 }: TrafficMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -65,6 +67,12 @@ export default function TrafficMap({
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState<string>('');
   const [calculatingRoute, setCalculatingRoute] = useState(false);
+  const [currentStatus, setCurrentStatus] = useState<'red' | 'yellow' | 'green'>(status);
+
+  // Update status when prop changes
+  useEffect(() => {
+    setCurrentStatus(status);
+  }, [status]);
 
   // Load Google Maps script
   useEffect(() => {
@@ -121,23 +129,29 @@ export default function TrafficMap({
     if (!google) return;
 
     try {
-      // Create map
+      // Create map with optimized settings
       const map = new google.maps.Map(mapRef.current, {
         center,
         zoom,
-        mapTypeControl: true,
+        mapTypeControl: false, // Disabled for faster load
         streetViewControl: false,
-        fullscreenControl: true,
+        fullscreenControl: false, // Disabled for faster load
         zoomControl: true,
+        gestureHandling: 'greedy',
+        disableDefaultUI: false,
+        styles: [] // Remove custom styles for faster rendering
       });
 
       mapInstanceRef.current = map;
 
-      // Add traffic layer
+      // Add traffic layer after map loads
       if (showTraffic) {
-        const trafficLayer = new google.maps.TrafficLayer();
-        trafficLayer.setMap(map);
-        trafficLayerRef.current = trafficLayer;
+        // Delay traffic layer slightly for faster initial render
+        setTimeout(() => {
+          const trafficLayer = new google.maps.TrafficLayer();
+          trafficLayer.setMap(map);
+          trafficLayerRef.current = trafficLayer;
+        }, 100);
       }
 
       console.log('✅ Map initialized successfully');
@@ -167,18 +181,23 @@ export default function TrafficMap({
 
     // Add current location marker
     if (currentLocation) {
+      // Determine color based on current ambulance status
+      const statusColor = currentStatus === 'red' ? '#ef4444' : 
+                         currentStatus === 'yellow' ? '#f59e0b' : '#10b981';
+      
       const marker = new google.maps.Marker({
         position: currentLocation,
         map: mapInstanceRef.current,
         title: 'Your Location',
         icon: {
           path: google.maps.SymbolPath.CIRCLE,
-          scale: 8,
-          fillColor: '#4285F4',
+          scale: 10,
+          fillColor: statusColor,
           fillOpacity: 1,
           strokeColor: '#ffffff',
-          strokeWeight: 2
-        }
+          strokeWeight: 3
+        },
+        zIndex: 1000
       });
       markersRef.current.push(marker);
     }
@@ -188,26 +207,45 @@ export default function TrafficMap({
       const color = ambulance.status === 'red' ? '#ef4444' : 
                     ambulance.status === 'yellow' ? '#f59e0b' : '#10b981';
       
+      // Main ambulance marker with direction arrow
       const marker = new google.maps.Marker({
         position: { lat: ambulance.lat, lng: ambulance.lng },
         map: mapInstanceRef.current,
         title: ambulance.vehicle_no,
         icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 10,
+          path: 'M 0,-2 2,2 0,1 -2,2 Z', // Arrow pointing up
           fillColor: color,
           fillOpacity: 1,
           strokeColor: '#ffffff',
-          strokeWeight: 2
-        }
+          strokeWeight: 2,
+          scale: 5,
+          rotation: 0 // Will be updated if heading is available
+        },
+        zIndex: 100
       });
 
+      // Build detailed info window content
+      let infoContent = `<div style="padding: 12px; min-width: 200px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <strong style="font-size: 16px;">${ambulance.vehicle_no}</strong>
+          <span style="background: ${color}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">
+            ${ambulance.status.toUpperCase()}
+          </span>
+        </div>
+        <div style="font-size: 13px; color: #555; line-height: 1.6;">
+          <div><strong>Driver:</strong> ${ambulance.name || 'N/A'}</div>`;
+      
+      if ((ambulance as any).destination) {
+        infoContent += `<div style="margin-top: 8px; padding: 8px; background: #f0f9ff; border-left: 3px solid #3b82f6; border-radius: 4px;">
+          <div style="color: #1e40af; font-weight: bold;">📍 Going to:</div>
+          <div style="color: #1e40af;">${(ambulance as any).destination.name}</div>
+        </div>`;
+      }
+      
+      infoContent += `</div></div>`;
+
       const infoWindow = new google.maps.InfoWindow({
-        content: `<div style="padding: 8px;">
-          <strong>${ambulance.vehicle_no}</strong><br/>
-          ${ambulance.name || ''}<br/>
-          Status: <span style="color: ${color};">${ambulance.status.toUpperCase()}</span>
-        </div>`
+        content: infoContent
       });
 
       marker.addListener('click', () => {
@@ -215,6 +253,62 @@ export default function TrafficMap({
       });
 
       markersRef.current.push(marker);
+
+      // If ambulance has a destination, draw a route line to it
+      if ((ambulance as any).destination) {
+        const destination = (ambulance as any).destination;
+        
+        // Add destination marker
+        const destMarker = new google.maps.Marker({
+          position: { lat: destination.lat, lng: destination.lng },
+          map: mapInstanceRef.current,
+          title: `${ambulance.vehicle_no} → ${destination.name}`,
+          icon: {
+            url: 'https://maps.google.com/mapfiles/kml/shapes/hospitals.png',
+            scaledSize: new google.maps.Size(32, 32)
+          },
+          zIndex: 50
+        });
+
+        const destInfoWindow = new google.maps.InfoWindow({
+          content: `<div style="padding: 8px;">
+            <strong>🏥 ${destination.name}</strong><br/>
+            <span style="color: #666; font-size: 12px;">Destination for ${ambulance.vehicle_no}</span>
+          </div>`
+        });
+
+        destMarker.addListener('click', () => {
+          destInfoWindow.open(mapInstanceRef.current, destMarker);
+        });
+
+        markersRef.current.push(destMarker);
+
+        // Draw route line
+        const routeLine = new google.maps.Polyline({
+          path: [
+            { lat: ambulance.lat, lng: ambulance.lng },
+            { lat: destination.lat, lng: destination.lng }
+          ],
+          geodesic: true,
+          strokeColor: color,
+          strokeOpacity: 0.8,
+          strokeWeight: 4,
+          map: mapInstanceRef.current,
+          icons: [{
+            icon: {
+              path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+              strokeColor: color,
+              fillColor: color,
+              fillOpacity: 1,
+              scale: 3
+            },
+            offset: '50%',
+            repeat: '100px'
+          }]
+        });
+
+        markersRef.current.push(routeLine as any);
+      }
     });
 
     // Add hospital markers
@@ -242,7 +336,7 @@ export default function TrafficMap({
 
       markersRef.current.push(marker);
     });
-  }, [isLoaded, ambulances, hospitals, currentLocation]);
+  }, [isLoaded, ambulances, hospitals, currentLocation, currentStatus]);
 
   // Calculate and display route when hospital is selected
   useEffect(() => {
@@ -491,29 +585,6 @@ export default function TrafficMap({
           <span className="font-semibold">Calculating route...</span>
         </div>
       )}
-      
-      {/* Map Legend */}
-      <div className="absolute bottom-4 right-4 bg-white rounded-lg shadow-lg px-3 py-2 border border-gray-200">
-        <p className="text-xs font-semibold text-gray-700 mb-1">Legend</p>
-        <div className="space-y-1 text-xs">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-red-500"></div>
-            <span>Emergency</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
-            <span>Non-Emergency</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-green-500"></div>
-            <span>Available</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm">🏥</span>
-            <span>Hospital</span>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { updateSOS } from '@/lib/firestore';
+import { updateSOS } from '@/lib/excel';
 
 export async function PUT(
   request: NextRequest,

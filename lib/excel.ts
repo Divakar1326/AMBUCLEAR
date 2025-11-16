@@ -23,6 +23,11 @@ export interface AmbulanceProfile {
   lng: number;
   heading: number;
   timestamp: string;
+  destination?: {
+    name: string;
+    lat: number;
+    lng: number;
+  };
 }
 
 export interface PublicUser {

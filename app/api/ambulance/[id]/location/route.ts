@@ -8,18 +8,25 @@ export async function POST(
 ) {
   try {
     const body = await request.json();
-    const { lat, lng, heading } = body;
+    const { lat, lng, heading, destination } = body;
 
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return NextResponse.json({ error: 'Invalid coordinates' }, { status: 400 });
     }
 
-    const updated = updateAmbulance(params.id, {
+    const updateData: any = {
       lat,
       lng,
       heading: heading || 0,
       timestamp: new Date().toISOString(),
-    });
+    };
+
+    // Add destination if provided
+    if (destination) {
+      updateData.destination = destination;
+    }
+
+    const updated = updateAmbulance(params.id, updateData);
 
     if (!updated) {
       return NextResponse.json({ error: 'Ambulance not found' }, { status: 404 });

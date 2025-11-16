@@ -3,14 +3,15 @@ import {
   getAmbulances,
   createAmbulance,
   type AmbulanceProfile,
-} from '@/lib/excel';
+} from '@/lib/firestore';
 
 // GET all ambulances
 export async function GET() {
   try {
-    const ambulances = getAmbulances();
+    const ambulances = await getAmbulances();
     return NextResponse.json({ ambulances });
   } catch (error) {
+    console.error('Error fetching ambulances:', error);
     return NextResponse.json({ error: 'Failed to fetch ambulances' }, { status: 500 });
   }
 }

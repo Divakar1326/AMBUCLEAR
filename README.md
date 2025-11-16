@@ -2,6 +2,7 @@
 
 # 🚑 AMBUCLEAR
 ### *AI-Powered Emergency Vehicle Smart Alert System*
+##click on the links below to view our project
 
 [![Live Demo](https://img.shields.io/badge/🌐_Live_Demo-ambuclear.vercel.app-00C7B7?style=for-the-badge&logo=vercel&logoColor=white)](https://ambuclear.vercel.app/)
 [![Video Demo](https://img.shields.io/badge/🎥_Watch_Demo-Google_Drive-EA4335?style=for-the-badge&logo=googledrive&logoColor=white)](https://drive.google.com/file/d/17xaoDscKK7Row95_UjgKGnncke4Uz92Z/view?usp=sharing)
@@ -1081,7 +1082,7 @@ We welcome contributions from the community! Here's how you can help:
 
 ### 🚑 **Every Second Counts. Every Life Matters.** 🚑
 
-**Built with ❤️ for emergency response by [Divakar M](https://github.com/Divakar1326)**
+**Built with ❤️ for emergency response by [Divakar M] [Neha S](https://github.com/Divakar1326)**
 
 *Give way to ambulances, save lives together* 🙏
 

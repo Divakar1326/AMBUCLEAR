@@ -31,7 +31,7 @@ interface TrafficMapProps {
   hospitals?: Hospital[];
   showTraffic?: boolean;
   currentLocation?: Location;
-  onMapLoad?: (map: google.maps.Map) => void;
+  onMapLoad?: (map: any) => void;
   height?: string;
 }
 

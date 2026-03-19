@@ -241,7 +241,6 @@ Visit `http://localhost:3000` to see the app.
 
 - **[Live Demo](https://ambuclear.vercel.app)** — Try it now
 - **[GitHub Repository](https://github.com/Divakar1326/AMBUCLEAR)** — Source code
-- **[API Documentation](https://github.com/Divakar1326/AMBUCLEAR/wiki)** — Endpoint details
 
 ---
 

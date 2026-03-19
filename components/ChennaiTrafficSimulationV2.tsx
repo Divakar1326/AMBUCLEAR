@@ -102,6 +102,12 @@ function toPoint(latLng: any): Point {
   return { lat: latLng.lat(), lng: latLng.lng() };
 }
 
+interface MarkerTheme {
+  fallbackColor?: string;
+  fallbackLabelColor?: string;
+  fallbackScale?: number;
+}
+
 export default function ChennaiTrafficSimulationV2() {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -170,7 +176,14 @@ export default function ChennaiTrafficSimulationV2() {
     marker.position = point;
   };
 
-  const createMarker = (google: any, map: any, position: Point, title: string, content: HTMLElement) => {
+  const createMarker = (
+    google: any,
+    map: any,
+    position: Point,
+    title: string,
+    content: HTMLElement,
+    theme?: MarkerTheme
+  ) => {
     const advancedCtor = google?.maps?.marker?.AdvancedMarkerElement;
     if (advancedCtor) {
       return new advancedCtor({
@@ -185,9 +198,17 @@ export default function ChennaiTrafficSimulationV2() {
       map,
       position,
       title,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        fillColor: theme?.fallbackColor || '#3b82f6',
+        fillOpacity: 1,
+        strokeColor: '#ffffff',
+        strokeWeight: 2,
+        scale: theme?.fallbackScale ?? 12,
+      },
       label: {
         text: (content.textContent || '').slice(0, 2),
-        color: '#111827',
+        color: theme?.fallbackLabelColor || '#ffffff',
         fontWeight: '700',
       },
     });
@@ -340,15 +361,24 @@ export default function ChennaiTrafficSimulationV2() {
 
       const label = document.createElement('div');
       label.textContent = '🚗';
-      label.style.fontSize = '22px';
-      label.style.textShadow = '1px 1px 2px rgba(0,0,0,0.5)';
+      label.style.fontSize = '20px';
+      label.style.width = '34px';
+      label.style.height = '34px';
+      label.style.display = 'flex';
+      label.style.alignItems = 'center';
+      label.style.justifyContent = 'center';
+      label.style.background = 'linear-gradient(135deg, #0ea5e9, #1d4ed8)';
+      label.style.border = '2px solid #ffffff';
+      label.style.borderRadius = '50%';
+      label.style.boxShadow = '0 3px 8px rgba(2, 6, 23, 0.35)';
 
       const marker = createMarker(
         google,
         map,
         { lat: basePoint.lat + offsetLat, lng: basePoint.lng + offsetLng },
         `Traffic Vehicle ${i + 1}`,
-        label
+        label,
+        { fallbackColor: '#2563eb', fallbackLabelColor: '#ffffff', fallbackScale: 10 }
       );
 
       scatteredCarsRef.current.push(marker);
@@ -371,14 +401,21 @@ export default function ChennaiTrafficSimulationV2() {
       label.textContent = `🚗 C${idx + 1}`;
       label.style.fontSize = '16px';
       label.style.fontWeight = 'bold';
-      label.style.textShadow = '1px 1px 2px rgba(0,0,0,0.3)';
+      label.style.color = '#eff6ff';
+      label.style.textShadow = '1px 1px 2px rgba(0,0,0,0.35)';
+      label.style.background = '#2563eb';
+      label.style.border = '2px solid #ffffff';
+      label.style.borderRadius = '9999px';
+      label.style.padding = '3px 8px';
+      label.style.boxShadow = '0 2px 6px rgba(30, 64, 175, 0.45)';
 
       const marker = createMarker(
         google,
         map,
         { lat: anchor.lat + offset.lat, lng: anchor.lng + offset.lng },
         `Junction Car ${idx + 1}`,
-        label
+        label,
+        { fallbackColor: '#2563eb', fallbackLabelColor: '#ffffff', fallbackScale: 11 }
       );
 
       carMarkersRef.current.push(marker);
@@ -395,8 +432,13 @@ export default function ChennaiTrafficSimulationV2() {
       newLabel.textContent = `🚗✓ C${idx + 1}`;
       newLabel.style.fontSize = '16px';
       newLabel.style.fontWeight = 'bold';
-      newLabel.style.color = '#10b981';
+      newLabel.style.color = '#ecfdf5';
       newLabel.style.textShadow = '1px 1px 2px rgba(0,0,0,0.3)';
+      newLabel.style.background = '#059669';
+      newLabel.style.border = '2px solid #ffffff';
+      newLabel.style.borderRadius = '9999px';
+      newLabel.style.padding = '3px 8px';
+      newLabel.style.boxShadow = '0 2px 6px rgba(6, 95, 70, 0.45)';
 
       setMarkerPosition(marker, { lat: current.lat, lng: nextLng });
 
@@ -404,6 +446,14 @@ export default function ChennaiTrafficSimulationV2() {
         marker.content = newLabel;
       } else if (typeof marker.setLabel === 'function') {
         marker.setLabel(`C${idx + 1}`);
+        marker.setIcon({
+          path: (window as any).google.maps.SymbolPath.CIRCLE,
+          fillColor: '#059669',
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+          scale: 11,
+        });
       }
     });
   };
@@ -550,10 +600,25 @@ export default function ChennaiTrafficSimulationV2() {
       // Ambulance marker
       const ambulanceLabel = document.createElement('div');
       ambulanceLabel.textContent = '🚑';
-      ambulanceLabel.style.fontSize = '28px';
-      ambulanceLabel.style.filter = 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))';
+      ambulanceLabel.style.fontSize = '26px';
+      ambulanceLabel.style.width = '40px';
+      ambulanceLabel.style.height = '40px';
+      ambulanceLabel.style.display = 'flex';
+      ambulanceLabel.style.alignItems = 'center';
+      ambulanceLabel.style.justifyContent = 'center';
+      ambulanceLabel.style.background = 'linear-gradient(135deg, #ef4444, #b91c1c)';
+      ambulanceLabel.style.border = '2px solid #ffffff';
+      ambulanceLabel.style.borderRadius = '50%';
+      ambulanceLabel.style.boxShadow = '0 4px 10px rgba(127, 29, 29, 0.45)';
 
-      ambulanceMarkerRef.current = createMarker(google, map, path[0], 'Simulated Ambulance', ambulanceLabel);
+      ambulanceMarkerRef.current = createMarker(
+        google,
+        map,
+        path[0],
+        'Simulated Ambulance',
+        ambulanceLabel,
+        { fallbackColor: '#dc2626', fallbackLabelColor: '#ffffff', fallbackScale: 13 }
+      );
 
       await syncAmbulanceStatus('red');
 
@@ -590,14 +655,31 @@ export default function ChennaiTrafficSimulationV2() {
         // Update ambulance position
         const ambulanceLabel = document.createElement('div');
         ambulanceLabel.textContent = '🚑';
-        ambulanceLabel.style.fontSize = '28px';
-        ambulanceLabel.style.filter = 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))';
+        ambulanceLabel.style.fontSize = '26px';
+        ambulanceLabel.style.width = '40px';
+        ambulanceLabel.style.height = '40px';
+        ambulanceLabel.style.display = 'flex';
+        ambulanceLabel.style.alignItems = 'center';
+        ambulanceLabel.style.justifyContent = 'center';
+        ambulanceLabel.style.background = 'linear-gradient(135deg, #ef4444, #b91c1c)';
+        ambulanceLabel.style.border = '2px solid #ffffff';
+        ambulanceLabel.style.borderRadius = '50%';
+        ambulanceLabel.style.boxShadow = '0 4px 10px rgba(127, 29, 29, 0.45)';
 
         if (ambulanceMarkerRef.current) {
           setMarkerPosition(ambulanceMarkerRef.current, point);
 
           if ('content' in ambulanceMarkerRef.current) {
             ambulanceMarkerRef.current.content = ambulanceLabel;
+          } else if (typeof ambulanceMarkerRef.current.setIcon === 'function') {
+            ambulanceMarkerRef.current.setIcon({
+              path: (window as any).google.maps.SymbolPath.CIRCLE,
+              fillColor: '#dc2626',
+              fillOpacity: 1,
+              strokeColor: '#ffffff',
+              strokeWeight: 2,
+              scale: 13,
+            });
           }
         }
 

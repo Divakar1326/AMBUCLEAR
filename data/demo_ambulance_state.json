@@ -1,0 +1,25 @@
+{
+  "id": "AMB-TN01AB2026",
+  "auth_uid": "demo-auth-uid",
+  "email": "demo@ambuclear.local",
+  "name": "Demo Driver",
+  "phone": "9999999999",
+  "vehicle_no": "TN-01-AB-2026",
+  "hospital_name": "Apollo Hospital Chennai",
+  "driving_license_number": "DEMO1234567890",
+  "verification_status": "verified",
+  "verification_score": 95,
+  "verification_extracted_text": "DEMO OCR TEXT",
+  "documents": {
+    "ambulance_photo_url": "",
+    "driving_license_photo_url": "",
+    "uploaded_at": "2026-03-15T17:19:32.079Z"
+  },
+  "status": "red",
+  "lat": 12.925219171252012,
+  "lng": 80.10928955060675,
+  "heading": 0,
+  "timestamp": "2026-03-19T13:57:58.927Z",
+  "destination": null,
+  "route_overview": null
+}

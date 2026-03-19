@@ -1,13 +1,5 @@
-// Groq AI Voice Assistance System
-// Provides intelligent LEFT/RIGHT directions for public drivers and traffic clearance recommendations for control room
-
-import Groq from "groq-sdk";
-
-// Initialize Groq client
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY || "",
-  dangerouslyAllowBrowser: true, // For client-side usage if needed
-});
+// Deterministic voice assistance and control-room recommendation engine.
+// Uses geometric lane-direction logic and distance-based urgency.
 
 // Types
 export interface Position {
@@ -152,7 +144,7 @@ export function calculateMoveDirection(
   };
 }
 
-// Generate intelligent public driver instructions using Groq AI
+// Generate deterministic public driver instruction from nearby emergency ambulances.
 export async function generatePublicDriverInstruction(
   publicDriver: PublicDriverPosition,
   nearbyAmbulances: AmbulanceData[]
@@ -174,60 +166,13 @@ export async function generatePublicDriverInstruction(
     return dist < closestDist ? amb : closest;
   });
 
-  // Get basic direction calculation
+  // Use closest ambulance and deterministic direction model.
   const basicInstruction = calculateMoveDirection(publicDriver, closestAmbulance);
 
-  // If Groq API is not configured, return basic instruction
-  if (!process.env.GROQ_API_KEY) {
-    return basicInstruction;
-  }
-
-  try {
-    // Use Groq AI for enhanced context-aware instructions
-    const prompt = `You are an emergency vehicle traffic assistant. An ambulance is approaching a public driver.
-
-Ambulance Details:
-- Position: ${closestAmbulance.position.lat}, ${closestAmbulance.position.lng}
-- Heading: ${closestAmbulance.heading}° (compass direction)
-- Status: ${closestAmbulance.status}
-- Distance to driver: ${Math.round(basicInstruction.distance)}m
-
-Driver Position: ${publicDriver.lat}, ${publicDriver.lng}
-
-Basic calculation suggests moving: ${basicInstruction.direction}
-
-Provide a clear, concise voice instruction (max 15 words) for the driver. Consider:
-1. Urgency based on distance
-2. Direction to move (LEFT, RIGHT, or CLEAR_AHEAD)
-3. Clear, actionable language
-
-Respond with ONLY the instruction text, nothing else.`;
-
-    const completion = await groq.chat.completions.create({
-      messages: [{ role: "user", content: prompt }],
-      model: "mixtral-8x7b-32768", // Fast, accurate model
-      temperature: 0.3,
-      max_tokens: 50,
-    });
-
-    const aiMessage = completion.choices[0]?.message?.content?.trim();
-
-    if (aiMessage) {
-      return {
-        ...basicInstruction,
-        message: aiMessage,
-      };
-    }
-
-    return basicInstruction;
-  } catch (error) {
-    console.error("Groq AI error:", error);
-    // Fallback to basic instruction
-    return basicInstruction;
-  }
+  return basicInstruction;
 }
 
-// Get traffic clearance recommendations for control room using Groq AI
+// Get traffic clearance recommendations for control room using deterministic rules.
 export async function getControlRoomRecommendations(
   ambulances: AmbulanceData[],
   sosAlerts: any[]
@@ -241,82 +186,7 @@ export async function getControlRoomRecommendations(
     return [];
   }
 
-  // If Groq API not configured, return basic recommendations
-  if (!process.env.GROQ_API_KEY) {
-    return emergencyAmbulances.map((amb) => ({
-      route: amb.destination
-        ? `Route to ${amb.destination.lat.toFixed(4)}, ${amb.destination.lng.toFixed(4)}`
-        : "Unknown route",
-      action: "Clear traffic on main route",
-      reason: `${amb.status} status ambulance needs clear path`,
-      priority: amb.status === "RED" ? "CRITICAL" : "HIGH",
-      ambulance_ids: [amb.id],
-    }));
-  }
-
-  try {
-    const prompt = `You are a traffic control AI assistant managing emergency vehicle routes.
-
-Current Situation:
-${emergencyAmbulances
-  .map(
-    (amb, i) => `
-Ambulance ${i + 1} (${amb.vehicle_no || amb.id}):
-- Status: ${amb.status}
-- Position: ${amb.position.lat}, ${amb.position.lng}
-- Heading: ${amb.heading}°
-- Has Destination: ${amb.destination ? "Yes" : "No"}
-${amb.destination ? `- Destination: ${amb.destination.lat}, ${amb.destination.lng}` : ""}
-`
-  )
-  .join("\n")}
-
-Active SOS Alerts: ${sosAlerts.length}
-
-Provide 3-5 traffic clearance recommendations. For each recommendation:
-1. Which route/intersection to clear
-2. What action to take (e.g., "Deploy traffic police at Junction X")
-3. Why this is important
-4. Priority level (CRITICAL/HIGH/MEDIUM)
-
-Format each recommendation as JSON:
-{
-  "route": "specific location/route",
-  "action": "specific action to take",
-  "reason": "why this matters",
-  "priority": "CRITICAL/HIGH/MEDIUM"
-}
-
-Respond with ONLY a JSON array of recommendations, nothing else.`;
-
-    const completion = await groq.chat.completions.create({
-      messages: [{ role: "user", content: prompt }],
-      model: "mixtral-8x7b-32768",
-      temperature: 0.4,
-      max_tokens: 1000,
-    });
-
-    const aiResponse = completion.choices[0]?.message?.content?.trim();
-
-    if (aiResponse) {
-      try {
-        // Try to parse JSON response
-        const recommendations = JSON.parse(aiResponse);
-        
-        // Add ambulance IDs to each recommendation
-        return recommendations.map((rec: any) => ({
-          ...rec,
-          ambulance_ids: emergencyAmbulances.map((amb) => amb.id),
-        }));
-      } catch (parseError) {
-        console.error("Failed to parse Groq response:", parseError);
-      }
-    }
-  } catch (error) {
-    console.error("Groq AI error:", error);
-  }
-
-  // Fallback to basic recommendations
+  // Deterministic recommendations
   return emergencyAmbulances.map((amb) => ({
     route: amb.destination
       ? `Route to ${amb.destination.lat.toFixed(4)}, ${amb.destination.lng.toFixed(4)}`

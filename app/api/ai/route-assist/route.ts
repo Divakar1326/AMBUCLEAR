@@ -60,8 +60,8 @@ export async function POST(request: NextRequest) {
       // Red status without destination
       else {
         priority = 'MEDIUM';
-        recommendation = 'Monitor and prepare to clear route once destination confirmed';
-        reason = 'Emergency mode active but destination not yet set';
+        recommendation = 'Monitor and prepare to clear route once driver selects destination';
+        reason = 'Emergency response initiated - awaiting driver to select hospital and lock route';
       }
 
       priorityRoutes.push({
@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
         priority,
         route: hasDestination 
           ? `Current → ${amb.destination?.name}`
-          : 'Awaiting destination',
+          : 'Destination not yet selected - Awaiting driver input',
         recommendation,
         reason,
         coordinates: {

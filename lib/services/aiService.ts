@@ -1,6 +1,6 @@
 /**
  * AI Service for intelligent traffic management (AMBUCLEAR Integration)
- * Supports multiple AI backends: Groq (AMBUCLEAR), Ollama (local), Google Gemini
+ * Supports multiple AI backends: Ollama (local), Google Gemini
  */
 
 interface TrafficContext {
@@ -21,7 +21,7 @@ interface AIInstruction {
 }
 
 interface AIConfig {
-  provider?: 'groq' | 'ollama' | 'gemini';
+  provider?: 'ollama' | 'gemini';
   apiKey?: string;
   baseUrl?: string;
   model?: string;
@@ -34,10 +34,10 @@ export class AIService {
   private model: string;
 
   constructor(config: AIConfig = {}) {
-    this.provider = config.provider || 'groq';
+    this.provider = config.provider || 'ollama';
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl || 'http://localhost:11434';
-    this.model = config.model || 'llama3-8b-8192';
+    this.model = config.model || 'llama3.1:8b';
   }
 
   /**
@@ -49,9 +49,6 @@ export class AIService {
     try {
       let response: string;
       switch (this.provider) {
-        case 'groq':
-          response = await this._queryGroq(prompt);
-          break;
         case 'ollama':
           response = await this._queryOllama(prompt);
           break;
@@ -79,58 +76,24 @@ export class AIService {
       green: 'non-emergency transport'
     };
 
-    return `You are a traffic management AI assistant. An ambulance with ${urgencyMap[context.emergencyLevel]} is approaching.
+    return `You are a traffic management AI assistant for emergency vehicle routing.
+An ambulance with ${urgencyMap[context.emergencyLevel]} is approaching.
 
 Context:
-- Emergency Level: ${context.emergencyLevel} (${urgencyMap[context.emergencyLevel]})
-- Traffic Congestion: ${context.trafficLevel || 'unknown'}
+- Ambulance Location: ${context.ambulanceLocation ? `${context.ambulanceLocation.lat}, ${context.ambulanceLocation.lng}` : 'unknown'}
+- Direction: ${context.ambulanceDirection ?? 'unknown'}
+- Traffic Level: ${context.trafficLevel || 'unknown'}
 - Road Type: ${context.roadType || 'main-road'}
-- Number of Lanes: ${context.lanes || 2}
-- Ambulance Direction: ${context.ambulanceDirection || 'unknown'}
-- Nearby Vehicles: ${context.nearbyVehicles?.length || 0} vehicles detected
+- Lanes: ${context.lanes || 2}
+- Nearby Vehicles: ${context.nearbyVehicles?.length || 0}
 
-Task: Provide CONCISE instructions (max 2-3 sentences) for drivers on which side to move to clear the path. Consider:
-1. Emergency severity (red = most urgent)
-2. Road width and lanes
-3. Traffic density
-4. Local traffic rules (keep left in India)
-
-Format your response as JSON:
+Respond ONLY in valid JSON with this exact shape:
 {
-  "action": "move-left" or "move-right" or "stop-and-wait" or "maintain-speed",
-  "instruction": "Brief clear instruction for drivers",
-  "urgency": "high" or "medium" or "low",
-  "estimatedClearTime": seconds
-}
-
-Response:`;
-  }
-
-  /**
-   * Query Groq API (AMBUCLEAR's default)
-   */
-  private async _queryGroq(prompt: string): Promise<string> {
-    if (!this.apiKey) {
-      throw new Error('Groq API key not configured');
-    }
-
-    const url = 'https://api.groq.com/openai/v1/chat/completions';
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
-        max_tokens: 300
-      })
-    });
-
-    const data = await response.json();
-    return data.choices[0]?.message?.content || '';
+  "action": "move-left" | "move-right" | "stop-and-wait" | "maintain-speed",
+  "instruction": "short, clear instruction",
+  "urgency": "high" | "medium" | "low",
+  "estimatedClearTime": number
+}`;
   }
 
   /**

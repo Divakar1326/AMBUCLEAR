@@ -8,27 +8,48 @@ import {
   deleteDoc,
   query,
   where,
-  Timestamp 
 } from 'firebase/firestore';
 import { db } from './firebase';
 
 // Type definitions
 export interface AmbulanceProfile {
   id: string;
+  auth_uid: string;
+  email: string;
   name: string;
   phone: string;
   vehicle_no: string;
   hospital_name: string;
+  driving_license_number: string;
+  verification_status: 'pending' | 'verified' | 'rejected';
+  verification_score: number;
+  verification_extracted_text?: string;
+  documents: {
+    ambulance_photo_url: string;
+    driving_license_photo_url: string;
+    uploaded_at: string;
+  };
   status: 'red' | 'yellow' | 'green';
   lat: number;
   lng: number;
   heading: number;
   timestamp: string;
   destination?: {
+    id?: string;
     name: string;
     lat: number;
     lng: number;
+    address?: string;
+    source?: string;
+    selected_at?: string;
   };
+  route_overview?: {
+    locked: boolean;
+    distance?: string;
+    durationInTraffic?: string;
+    trafficDelay?: number;
+    updated_at: string;
+  } | null;
 }
 
 export interface PublicUser {
@@ -78,6 +99,22 @@ export async function getAmbulanceById(id: string): Promise<AmbulanceProfile | n
     return null;
   } catch (error) {
     console.error('Error getting ambulance:', error);
+    return null;
+  }
+}
+
+export async function getAmbulanceByAuthUid(authUid: string): Promise<AmbulanceProfile | null> {
+  try {
+    const q = query(collection(db, AMBULANCES), where('auth_uid', '==', authUid));
+    const snapshot = await getDocs(q);
+
+    if (snapshot.empty) {
+      return null;
+    }
+
+    return snapshot.docs[0].data() as AmbulanceProfile;
+  } catch (error) {
+    console.error('Error getting ambulance by auth UID:', error);
     return null;
   }
 }

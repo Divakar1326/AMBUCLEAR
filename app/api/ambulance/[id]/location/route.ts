@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { updateAmbulance } from '@/lib/firestore';
 import { broadcastAmbulanceUpdate } from '@/lib/websocket';
+import { updateDemoAmbulance } from '@/lib/demoAmbulance';
 
 export async function POST(
   request: NextRequest,
@@ -8,7 +9,7 @@ export async function POST(
 ) {
   try {
     const body = await request.json();
-    const { lat, lng, heading, destination } = body;
+    const { lat, lng, heading, destination, route_overview } = body;
 
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return NextResponse.json({ error: 'Invalid coordinates' }, { status: 400 });
@@ -21,12 +22,21 @@ export async function POST(
       timestamp: new Date().toISOString(),
     };
 
-    // Add destination if provided
-    if (destination) {
+    // Keep destination in sync with the dashboard selection.
+    // Explicit null clears stale destination in control room.
+    if (destination !== undefined) {
       updateData.destination = destination;
     }
 
-    const updated = updateAmbulance(params.id, updateData);
+    if (route_overview !== undefined) {
+      updateData.route_overview = route_overview;
+    }
+
+    let updated = await updateAmbulance(params.id, updateData);
+
+    if (!updated) {
+      updated = updateDemoAmbulance(params.id, updateData);
+    }
 
     if (!updated) {
       return NextResponse.json({ error: 'Ambulance not found' }, { status: 404 });

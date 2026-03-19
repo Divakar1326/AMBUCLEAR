@@ -14,6 +14,15 @@ interface Ambulance {
   status: 'red' | 'yellow' | 'green';
   lat: number;
   lng: number;
+  destination?: {
+    id?: string;
+    name: string;
+    lat: number;
+    lng: number;
+    address?: string;
+    source?: string;
+    selected_at?: string;
+  } | null;
 }
 
 interface Hospital {
@@ -35,6 +44,37 @@ interface TrafficMapProps {
   selectedHospital?: Hospital;
   onRouteCalculated?: (routeData: any) => void;
   status?: 'red' | 'yellow' | 'green';
+  showAmbulanceDestinations?: boolean;
+  routeLocked?: boolean;
+  followCenter?: boolean;
+  currentLocationMarkerStyle?: 'status-dot' | 'car';
+}
+
+function metersBetween(a: Location, b: Location) {
+  const R = 6371000;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const sa =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(sa), Math.sqrt(1 - sa));
+  return R * c;
+}
+
+function buildEmojiIcon(google: any, emoji: string, bgColor: string, size = 40) {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 40 40">
+      <circle cx="20" cy="20" r="18" fill="${bgColor}" stroke="#ffffff" stroke-width="3" />
+      <text x="20" y="26" text-anchor="middle" font-size="18" font-family="Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji">${emoji}</text>
+    </svg>
+  `;
+
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new google.maps.Size(size, size),
+    anchor: new google.maps.Point(size / 2, size / 2),
+  };
 }
 
 // Global flag to track if Google Maps script is loaded
@@ -55,7 +95,11 @@ export default function TrafficMap({
   height = '500px',
   selectedHospital,
   onRouteCalculated,
-  status = 'green'
+  status = 'green',
+  showAmbulanceDestinations = true,
+  routeLocked = false,
+  followCenter = true,
+  currentLocationMarkerStyle = 'status-dot',
 }: TrafficMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -63,7 +107,13 @@ export default function TrafficMap({
   const markersRef = useRef<any[]>([]);
   const routePolylineRef = useRef<any>(null);
   const directionsRendererRef = useRef<any>(null);
+  const currentLocationMarkerRef = useRef<any>(null);
+  const selectedHospitalMarkerRef = useRef<any>(null);
   const calculatedRoutesRef = useRef<Map<string, any>>(new Map()); // Cache calculated routes
+  const ambulanceRoutePathsRef = useRef<Map<string, any[]>>(new Map());
+  const lastCenteredPointRef = useRef<Location | null>(null);
+  const lastRouteCalculationRef = useRef<{ point: Location; at: number } | null>(null);
+  const markerRenderCycleRef = useRef(0);
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState<string>('');
   const [calculatingRoute, setCalculatingRoute] = useState(false);
@@ -163,10 +213,62 @@ export default function TrafficMap({
 
   // Update center when it changes
   useEffect(() => {
-    if (mapInstanceRef.current && center) {
+    if (!mapInstanceRef.current || !center) return;
+    if (!followCenter) return;
+
+    if (!lastCenteredPointRef.current) {
       mapInstanceRef.current.setCenter(center);
+      lastCenteredPointRef.current = center;
+      return;
     }
-  }, [center.lat, center.lng]);
+
+    const moved = metersBetween(lastCenteredPointRef.current, center);
+    if (!selectedHospital && moved > 120) {
+      mapInstanceRef.current.panTo(center);
+      lastCenteredPointRef.current = center;
+    }
+  }, [center.lat, center.lng, selectedHospital, followCenter]);
+
+  useEffect(() => {
+    if (!mapInstanceRef.current || !isLoaded) return;
+
+    const google = (window as any).google;
+    if (!google) return;
+
+    if (!currentLocation) {
+      if (currentLocationMarkerRef.current) {
+        currentLocationMarkerRef.current.setMap(null);
+        currentLocationMarkerRef.current = null;
+      }
+      return;
+    }
+
+    const statusColor = currentStatus === 'red' ? '#ef4444' : currentStatus === 'yellow' ? '#f59e0b' : '#10b981';
+    const icon = currentLocationMarkerStyle === 'car'
+      ? buildEmojiIcon(google, '🚗', '#2563eb', 42)
+      : {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 10,
+          fillColor: statusColor,
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 3,
+        };
+
+    if (!currentLocationMarkerRef.current) {
+      currentLocationMarkerRef.current = new google.maps.Marker({
+        position: currentLocation,
+        map: mapInstanceRef.current,
+        title: 'Your Location',
+        icon,
+        zIndex: 1000,
+      });
+      return;
+    }
+
+    currentLocationMarkerRef.current.setPosition(currentLocation);
+    currentLocationMarkerRef.current.setIcon(icon);
+  }, [isLoaded, currentLocation?.lat, currentLocation?.lng, currentStatus, currentLocationMarkerStyle]);
 
   // Update markers
   useEffect(() => {
@@ -174,33 +276,12 @@ export default function TrafficMap({
 
     const google = (window as any).google;
     if (!google) return;
+    markerRenderCycleRef.current += 1;
+    const renderCycle = markerRenderCycleRef.current;
 
     // Clear old markers
     markersRef.current.forEach(marker => marker.setMap(null));
     markersRef.current = [];
-
-    // Add current location marker
-    if (currentLocation) {
-      // Determine color based on current ambulance status
-      const statusColor = currentStatus === 'red' ? '#ef4444' : 
-                         currentStatus === 'yellow' ? '#f59e0b' : '#10b981';
-      
-      const marker = new google.maps.Marker({
-        position: currentLocation,
-        map: mapInstanceRef.current,
-        title: 'Your Location',
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 10,
-          fillColor: statusColor,
-          fillOpacity: 1,
-          strokeColor: '#ffffff',
-          strokeWeight: 3
-        },
-        zIndex: 1000
-      });
-      markersRef.current.push(marker);
-    }
 
     // Add ambulance markers
     ambulances.forEach(ambulance => {
@@ -212,15 +293,7 @@ export default function TrafficMap({
         position: { lat: ambulance.lat, lng: ambulance.lng },
         map: mapInstanceRef.current,
         title: ambulance.vehicle_no,
-        icon: {
-          path: 'M 0,-2 2,2 0,1 -2,2 Z', // Arrow pointing up
-          fillColor: color,
-          fillOpacity: 1,
-          strokeColor: '#ffffff',
-          strokeWeight: 2,
-          scale: 5,
-          rotation: 0 // Will be updated if heading is available
-        },
+        icon: buildEmojiIcon(google, '🚑', color, 42),
         zIndex: 100
       });
 
@@ -235,10 +308,11 @@ export default function TrafficMap({
         <div style="font-size: 13px; color: #555; line-height: 1.6;">
           <div><strong>Driver:</strong> ${ambulance.name || 'N/A'}</div>`;
       
-      if ((ambulance as any).destination) {
+      if (showAmbulanceDestinations && (ambulance as any).destination) {
         infoContent += `<div style="margin-top: 8px; padding: 8px; background: #f0f9ff; border-left: 3px solid #3b82f6; border-radius: 4px;">
           <div style="color: #1e40af; font-weight: bold;">📍 Going to:</div>
           <div style="color: #1e40af;">${(ambulance as any).destination.name}</div>
+          ${((ambulance as any).destination.address ? `<div style="color: #475569; font-size: 12px; margin-top: 4px;">${(ambulance as any).destination.address}</div>` : '')}
         </div>`;
       }
       
@@ -254,9 +328,10 @@ export default function TrafficMap({
 
       markersRef.current.push(marker);
 
-      // If ambulance has a destination, draw a route line to it
-      if ((ambulance as any).destination) {
+      // If ambulance has a destination, draw the actual road route instead of a straight line.
+      if (showAmbulanceDestinations && (ambulance as any).destination) {
         const destination = (ambulance as any).destination;
+        const routeCacheKey = `${ambulance.id}:${ambulance.lat},${ambulance.lng}:${destination.lat},${destination.lng}`;
         
         // Add destination marker
         const destMarker = new google.maps.Marker({
@@ -273,6 +348,7 @@ export default function TrafficMap({
         const destInfoWindow = new google.maps.InfoWindow({
           content: `<div style="padding: 8px;">
             <strong>🏥 ${destination.name}</strong><br/>
+            ${(destination.address ? `<div style="color: #666; font-size: 12px; margin-top: 4px;">${destination.address}</div>` : '')}
             <span style="color: #666; font-size: 12px;">Destination for ${ambulance.vehicle_no}</span>
           </div>`
         });
@@ -283,36 +359,76 @@ export default function TrafficMap({
 
         markersRef.current.push(destMarker);
 
-        // Draw route line
-        const routeLine = new google.maps.Polyline({
-          path: [
-            { lat: ambulance.lat, lng: ambulance.lng },
-            { lat: destination.lat, lng: destination.lng }
-          ],
-          geodesic: true,
-          strokeColor: color,
-          strokeOpacity: 0.8,
-          strokeWeight: 4,
-          map: mapInstanceRef.current,
-          icons: [{
-            icon: {
-              path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-              strokeColor: color,
-              fillColor: color,
-              fillOpacity: 1,
-              scale: 3
-            },
-            offset: '50%',
-            repeat: '100px'
-          }]
-        });
+        const drawRoutePolyline = (path: any[]) => {
+          if (renderCycle !== markerRenderCycleRef.current) return;
 
-        markersRef.current.push(routeLine as any);
+          const routeLine = new google.maps.Polyline({
+            path,
+            geodesic: false,
+            strokeColor: color,
+            strokeOpacity: 0.85,
+            strokeWeight: 4,
+            map: mapInstanceRef.current,
+            icons: [{
+              icon: {
+                path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                strokeColor: color,
+                fillColor: color,
+                fillOpacity: 1,
+                scale: 3
+              },
+              offset: '50%',
+              repeat: '100px'
+            }]
+          });
+
+          markersRef.current.push(routeLine as any);
+        };
+
+        const cachedPath = ambulanceRoutePathsRef.current.get(routeCacheKey);
+        if (cachedPath) {
+          drawRoutePolyline(cachedPath);
+        } else {
+          const directionsService = new google.maps.DirectionsService();
+          directionsService.route(
+            {
+              origin: { lat: ambulance.lat, lng: ambulance.lng },
+              destination: { lat: destination.lat, lng: destination.lng },
+              travelMode: google.maps.TravelMode.DRIVING,
+              drivingOptions: {
+                departureTime: new Date(),
+                trafficModel: google.maps.TrafficModel.BEST_GUESS,
+              },
+            },
+            (result: any, status: any) => {
+              if (renderCycle !== markerRenderCycleRef.current) return;
+
+              if (status === google.maps.DirectionsStatus.OK && result?.routes?.[0]?.overview_path) {
+                const overviewPath = result.routes[0].overview_path.map((point: any) => ({
+                  lat: point.lat(),
+                  lng: point.lng(),
+                }));
+                ambulanceRoutePathsRef.current.set(routeCacheKey, overviewPath);
+                drawRoutePolyline(overviewPath);
+                return;
+              }
+
+              drawRoutePolyline([
+                { lat: ambulance.lat, lng: ambulance.lng },
+                { lat: destination.lat, lng: destination.lng }
+              ]);
+            }
+          );
+        }
       }
     });
 
     // Add hospital markers
     hospitals.forEach(hospital => {
+      if (selectedHospital && hospital.id === selectedHospital.id) {
+        return;
+      }
+
       const marker = new google.maps.Marker({
         position: { lat: hospital.lat, lng: hospital.lng },
         map: mapInstanceRef.current,
@@ -336,7 +452,59 @@ export default function TrafficMap({
 
       markersRef.current.push(marker);
     });
-  }, [isLoaded, ambulances, hospitals, currentLocation, currentStatus]);
+
+  }, [isLoaded, ambulances, hospitals, selectedHospital?.id, showAmbulanceDestinations]);
+
+  useEffect(() => {
+    if (!mapInstanceRef.current || !isLoaded) return;
+
+    const google = (window as any).google;
+    if (!google) return;
+
+    if (!selectedHospital) {
+      if (selectedHospitalMarkerRef.current) {
+        selectedHospitalMarkerRef.current.setMap(null);
+        selectedHospitalMarkerRef.current = null;
+      }
+      return;
+    }
+
+    const markerConfig = {
+      position: { lat: selectedHospital.lat, lng: selectedHospital.lng },
+      map: mapInstanceRef.current,
+      title: selectedHospital.name,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 12,
+        fillColor: '#dc2626',
+        fillOpacity: 1,
+        strokeColor: '#ffffff',
+        strokeWeight: 3,
+      },
+      label: {
+        text: 'H',
+        color: '#ffffff',
+        fontWeight: '700',
+        fontSize: '12px',
+      },
+      zIndex: 1200,
+    };
+
+    if (!selectedHospitalMarkerRef.current) {
+      selectedHospitalMarkerRef.current = new google.maps.Marker(markerConfig);
+      const selectedInfoWindow = new google.maps.InfoWindow({
+        content: `<div style="padding: 8px;"><strong>🏥 ${selectedHospital.name}</strong><br/><span style="color: #666; font-size: 12px;">Selected destination</span></div>`,
+      });
+
+      selectedHospitalMarkerRef.current.addListener('click', () => {
+        selectedInfoWindow.open(mapInstanceRef.current, selectedHospitalMarkerRef.current);
+      });
+      return;
+    }
+
+    selectedHospitalMarkerRef.current.setPosition(markerConfig.position);
+    selectedHospitalMarkerRef.current.setTitle(selectedHospital.name);
+  }, [isLoaded, selectedHospital?.id, selectedHospital?.lat, selectedHospital?.lng]);
 
   // Calculate and display route when hospital is selected
   useEffect(() => {
@@ -352,8 +520,29 @@ export default function TrafficMap({
     const google = (window as any).google;
     if (!google) return;
 
+    const now = Date.now();
+    const roundedCurrent = {
+      lat: Number(currentLocation.lat.toFixed(4)),
+      lng: Number(currentLocation.lng.toFixed(4)),
+    };
+
+    if (routeLocked && lastRouteCalculationRef.current) {
+      const movedSinceLastRoute = metersBetween(lastRouteCalculationRef.current.point, roundedCurrent);
+      if (movedSinceLastRoute < 150) {
+        return;
+      }
+    }
+
+    if (!routeLocked && lastRouteCalculationRef.current) {
+      const elapsed = now - lastRouteCalculationRef.current.at;
+      const movedSinceLastRoute = metersBetween(lastRouteCalculationRef.current.point, roundedCurrent);
+      if (elapsed < 12000 && movedSinceLastRoute < 80) {
+        return;
+      }
+    }
+
     // Create unique cache key for this route
-    const cacheKey = `${currentLocation.lat},${currentLocation.lng}-${selectedHospital.lat},${selectedHospital.lng}`;
+    const cacheKey = `${roundedCurrent.lat},${roundedCurrent.lng}-${selectedHospital.lat.toFixed(4)},${selectedHospital.lng.toFixed(4)}`;
     
     // Check if route already calculated (use cached result)
     if (calculatedRoutesRef.current.has(cacheKey)) {
@@ -368,7 +557,7 @@ export default function TrafficMap({
       // Create new renderer and display cached route
       const directionsRenderer = new google.maps.DirectionsRenderer({
         map: mapInstanceRef.current,
-        suppressMarkers: false,
+        suppressMarkers: true,
         polylineOptions: {
           strokeColor: '#2563eb',
           strokeWeight: 6,
@@ -404,7 +593,7 @@ export default function TrafficMap({
     // Create new renderer with custom styling
     const directionsRenderer = new google.maps.DirectionsRenderer({
       map: mapInstanceRef.current,
-      suppressMarkers: false, // Show start/end markers
+      suppressMarkers: true,
       polylineOptions: {
         strokeColor: '#2563eb', // Blue route line
         strokeWeight: 6,
@@ -523,11 +712,12 @@ export default function TrafficMap({
       };
 
       // Cache this route to prevent recalculation
-      const cacheKey = `${currentLocation.lat},${currentLocation.lng}-${selectedHospital.lat},${selectedHospital.lng}`;
+      const cacheKey = `${roundedCurrent.lat},${roundedCurrent.lng}-${selectedHospital.lat.toFixed(4)},${selectedHospital.lng.toFixed(4)}`;
       calculatedRoutesRef.current.set(cacheKey, {
         directionsResult: modifiedResult,
         routeData
       });
+      lastRouteCalculationRef.current = { point: roundedCurrent, at: now };
       console.log('💾 Route cached for future use');
       console.log('📊 Shortest route data:', routeData);
       onRouteCalculated?.(routeData);
@@ -536,7 +726,7 @@ export default function TrafficMap({
       console.error('❌ Route calculation failed:', error);
       setError('Failed to calculate route');
     });
-  }, [isLoaded, selectedHospital?.id, currentLocation?.lat, currentLocation?.lng]);
+  }, [isLoaded, selectedHospital?.id, currentLocation?.lat, currentLocation?.lng, routeLocked]);
 
   // Show error state
   if (error) {

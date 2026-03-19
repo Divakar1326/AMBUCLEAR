@@ -1,14 +1,12 @@
 # Data Directory
 
-This directory stores the Excel database file (`ambuclear_data.xlsx`) which is automatically created when the application starts.
+This directory stores the JSON data file `ambuclear_data.json` used by the application.
 
-The file contains three sheets:
-1. **ambulance_profiles** - Ambulance driver registrations and status
-2. **public_users** - Public driver location tracking
-3. **sos** - SOS emergency alerts
+The file contains these collections:
+1. `ambulances` - Ambulance driver registrations, status, and live position data
+2. `sos` - SOS emergency alerts
 
 ## Notes
-- The Excel file is created automatically on first run
-- File is gitignored for security
+- The JSON file is read and updated by the server helpers in `lib/excel.ts`
 - Ensure write permissions for the application
 - Backup regularly in production

@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AIService } from '@/lib/services/aiService';
 
-// Check for different AI provider configurations
-const groqKey = process.env.GROQ_API_KEY || '';
 const geminiKey = process.env.GEMINI_API_KEY || '';
 
 export async function POST(request: NextRequest) {
@@ -25,16 +23,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Determine which AI provider to use
-    let aiConfig = {};
-    if (groqKey) {
-      aiConfig = { provider: 'groq', apiKey: groqKey, model: 'llama3-8b-8192' };
-    } else if (geminiKey) {
-      aiConfig = { provider: 'gemini', apiKey: geminiKey };
-    } else {
-      // No AI provider, will use fallback rule-based system
-      aiConfig = { provider: 'ollama' };
-    }
+    // Prefer Gemini when configured, else local provider with rule-based fallback.
+    const aiConfig = geminiKey
+      ? { provider: 'gemini', apiKey: geminiKey }
+      : { provider: 'ollama' };
 
     const aiService = new AIService(aiConfig as any);
     const instructions = await aiService.analyzeTrafficAndProvideInstructions({
@@ -55,7 +47,7 @@ export async function POST(request: NextRequest) {
       data: {
         ...instructions,
         voiceInstruction,
-        aiProvider: 'groq'
+        aiProvider: aiConfig.provider
       }
     });
   } catch (error: any) {

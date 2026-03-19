@@ -47,6 +47,8 @@ export interface SOSRecord {
   lng: number;
   active: boolean;
   timestamp: string;
+  type?: string;
+  note?: string;
 }
 
 // Initialize JSON database file if it doesn't exist

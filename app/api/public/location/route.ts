@@ -20,7 +20,15 @@ export async function POST(request: NextRequest) {
       timestamp: new Date().toISOString(),
     };
 
-    upsertPublicUser(user);
+    try {
+      await upsertPublicUser(user);
+    } catch (writeError: any) {
+      // Keep client GPS flow alive even if Firestore rules block anonymous writes.
+      if (writeError?.code !== 'permission-denied') {
+        throw writeError;
+      }
+      console.warn('Public location write skipped (permission denied).');
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

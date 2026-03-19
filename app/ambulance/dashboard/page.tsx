@@ -19,6 +19,32 @@ interface Hospital {
   types?: string[];
 }
 
+function distanceMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+  const R = 6371000;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const sa =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(sa), Math.sqrt(1 - sa));
+  return R * c;
+}
+
+function buildDestinationPayload(hospital: Hospital | null) {
+  if (!hospital) return null;
+
+  return {
+    id: hospital.id,
+    name: hospital.name,
+    lat: hospital.lat,
+    lng: hospital.lng,
+    address: hospital.address,
+    source: hospital.id.startsWith('fallback-') ? 'fallback-search' : 'google-search',
+    selected_at: new Date().toISOString(),
+  };
+}
+
 interface Ambulance {
   id: string;
   name: string;
@@ -46,17 +72,59 @@ export default function AmbulanceDashboard() {
   const [searchSuggestions, setSearchSuggestions] = useState<Hospital[]>([]);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  const [registeredHospital, setRegisteredHospital] = useState<Hospital | null>(null);
-  const [loadingRegisteredHospital, setLoadingRegisteredHospital] = useState(false);
+  const [favoriteHospitals, setFavoriteHospitals] = useState<Hospital[]>([]);
+  const [loadingFavorites, setLoadingFavorites] = useState(false);
   const [activeSOS, setActiveSOS] = useState<any[]>([]);
   const [allAmbulances, setAllAmbulances] = useState<any[]>([]);
   const [navigationVoiceEnabled, setNavigationVoiceEnabled] = useState(true);
   const [lastSpokenStep, setLastSpokenStep] = useState<number>(-1);
+  const [showSOSReasonModal, setShowSOSReasonModal] = useState(false);
+  const [sosReason, setSosReason] = useState<'signal_issues' | 'traffic_jam' | 'accident' | null>(null);
+  const selectedHospitalRef = useRef<Hospital | null>(null);
+  const routeDataRef = useRef<any>(null);
+  const isRouteLockedRef = useRef(false);
+  const lastAcceptedGpsRef = useRef<{ lat: number; lng: number } | null>(null);
+  const lastHeadingRef = useRef(0);
+
+  const getRouteOverviewPayload = () => {
+    if (!isRouteLockedRef.current || !routeDataRef.current) return null;
+
+    return {
+      locked: true,
+      distance: routeDataRef.current.distance,
+      durationInTraffic: routeDataRef.current.durationInTraffic,
+      trafficDelay: Number(routeDataRef.current.trafficDelay || 0),
+      updated_at: new Date().toISOString(),
+    };
+  };
+
+  const syncLiveRouteState = useCallback(async (position?: { lat: number; lng: number }, heading = 0) => {
+    if (!ambulanceId) return;
+
+    if (!position) return;
+
+    try {
+      await fetch(`/api/ambulance/${ambulanceId}/location`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat: position.lat,
+          lng: position.lng,
+          heading,
+          destination: buildDestinationPayload(selectedHospitalRef.current),
+          route_overview: getRouteOverviewPayload(),
+        }),
+      });
+    } catch (error) {
+      console.error('Error syncing live route state:', error);
+    }
+  }, [ambulanceId]);
 
   // Memoized route calculation handler to prevent jittering
   const handleRouteCalculated = useCallback((data: any) => {
     console.log('Route data received:', data);
     setRouteData(data);
+    routeDataRef.current = data;
     
     // Speak turn-by-turn instructions
     if (navigationVoiceEnabled && data?.route?.legs?.[0]?.steps) {
@@ -89,25 +157,27 @@ export default function AmbulanceDashboard() {
 
   // Check authentication
   useEffect(() => {
+    selectedHospitalRef.current = selectedHospital;
+  }, [selectedHospital]);
+
+  useEffect(() => {
+    routeDataRef.current = routeData;
+  }, [routeData]);
+
+  useEffect(() => {
+    isRouteLockedRef.current = isRouteLocked;
+  }, [isRouteLocked]);
+
+  useEffect(() => {
     const id = localStorage.getItem('ambulance_id');
     if (!id) {
       router.push('/ambulance');
-    } else {
-      setAmbulanceId(id);
-      loadProfile(id);
-      
-      // Load saved registered hospital from localStorage
-      const savedHospital = localStorage.getItem(`registered_hospital_${id}`);
-      if (savedHospital) {
-        try {
-          const hospital = JSON.parse(savedHospital);
-          console.log('📍 Loaded saved registered hospital:', hospital.name);
-          setRegisteredHospital(hospital);
-        } catch (e) {
-          console.error('Error loading saved hospital:', e);
-        }
-      }
+      return;
     }
+
+    setAmbulanceId(id);
+    loadProfile(id);
+    loadFavorites(id);
   }, [router]);
 
   const loadProfile = async (id: string) => {
@@ -118,14 +188,6 @@ export default function AmbulanceDashboard() {
         setProfile(data.ambulance);
         setStatus(data.ambulance.status);
         console.log('✅ Profile loaded:', data.ambulance);
-        console.log('📋 Hospital name:', data.ambulance.hospital_name);
-        // Load registered hospital if available
-        if (data.ambulance.hospital_name) {
-          console.log('🏥 Will load registered hospital:', data.ambulance.hospital_name);
-          loadRegisteredHospital(data.ambulance.hospital_name);
-        } else {
-          console.log('⚠️ No hospital_name in profile');
-        }
       }
     } catch (error) {
       console.error('Error loading profile:', error);
@@ -134,32 +196,43 @@ export default function AmbulanceDashboard() {
     }
   };
 
-  // Load registered hospital details
-  const loadRegisteredHospital = async (hospitalName: string) => {
-    if (!currentPosition) {
-      // Retry when position is available
-      setTimeout(() => {
-        if (currentPosition) loadRegisteredHospital(hospitalName);
-      }, 2000);
-      return;
-    }
-    
+  // Load favorite hospitals
+  const loadFavorites = async (id: string) => {
     try {
-      setLoadingRegisteredHospital(true);
-      const response = await fetch('/api/hospitals/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: hospitalName, location: currentPosition }),
-      });
-      
-      const data = await response.json();
-      if (data.success && data.hospitals && data.hospitals.length > 0) {
-        setRegisteredHospital(data.hospitals[0]);
+      setLoadingFavorites(true);
+      const favorites = localStorage.getItem(`favorite_hospitals_${id}`);
+      if (favorites) {
+        setFavoriteHospitals(JSON.parse(favorites));
       }
     } catch (error) {
-      console.error('Error loading registered hospital:', error);
+      console.error('Error loading favorites:', error);
     } finally {
-      setLoadingRegisteredHospital(false);
+      setLoadingFavorites(false);
+    }
+  };
+
+  // Add hospital to favorites
+  const addToFavorites = (hospital: Hospital) => {
+    if (ambulanceId) {
+      const updated = [...favoriteHospitals];
+      const exists = updated.some(h => h.id === hospital.id);
+      if (!exists) {
+        updated.push(hospital);
+        setFavoriteHospitals(updated);
+        localStorage.setItem(`favorite_hospitals_${ambulanceId}`, JSON.stringify(updated));
+        alert(`✓ ${hospital.name} added to favorites`);
+      } else {
+        alert('Already in favorites');
+      }
+    }
+  };
+
+  // Remove hospital from favorites
+  const removeFromFavorites = (hospitalId: string) => {
+    if (ambulanceId) {
+      const updated = favoriteHospitals.filter(h => h.id !== hospitalId);
+      setFavoriteHospitals(updated);
+      localStorage.setItem(`favorite_hospitals_${ambulanceId}`, JSON.stringify(updated));
     }
   };
 
@@ -206,29 +279,28 @@ export default function AmbulanceDashboard() {
       const watchId = navigator.geolocation.watchPosition(
         async (position) => {
           const { latitude, longitude, heading } = position.coords;
+          const nextPoint = { lat: latitude, lng: longitude };
+          const nextHeading = heading || 0;
+          const previousPoint = lastAcceptedGpsRef.current;
+
+          // Ignore tiny GPS jitter to prevent marker/page flicker.
+          if (previousPoint) {
+            const movedMeters = distanceMeters(previousPoint, nextPoint);
+            const headingDelta = Math.abs(nextHeading - lastHeadingRef.current);
+            const normalizedHeadingDelta = Math.min(headingDelta, 360 - headingDelta);
+            if (movedMeters < 8 && normalizedHeadingDelta < 12) {
+              return;
+            }
+          }
+
           console.log('GPS Update:', { latitude, longitude, heading });
-          setCurrentPosition({ lat: latitude, lng: longitude });
+          lastAcceptedGpsRef.current = nextPoint;
+          lastHeadingRef.current = nextHeading;
+          setCurrentPosition(nextPoint);
           setGpsEnabled(true);
 
           // Update server
-          try {
-            await fetch(`/api/ambulance/${ambulanceId}/location`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                lat: latitude,
-                lng: longitude,
-                heading: heading || 0,
-                destination: selectedHospital ? {
-                  name: selectedHospital.name,
-                  lat: selectedHospital.lat,
-                  lng: selectedHospital.lng
-                } : undefined
-              }),
-            });
-          } catch (err) {
-            console.error('Error updating location:', err);
-          }
+          await syncLiveRouteState(nextPoint, nextHeading);
         },
         (error) => {
           console.error('GPS error:', error);
@@ -246,21 +318,35 @@ export default function AmbulanceDashboard() {
 
     const cleanup = startGPS();
     return cleanup;
-  }, [ambulanceId]);
+  }, [ambulanceId, syncLiveRouteState]);
 
-  // Load nearby hospitals when in red status
   useEffect(() => {
-    if (status === 'red' && currentPosition) {
-      console.log('Loading hospitals for position:', currentPosition);
+    if (!ambulanceId || !currentPosition) return;
+    syncLiveRouteState(currentPosition);
+  }, [ambulanceId, currentPosition, selectedHospital, isRouteLocked, routeData, syncLiveRouteState]);
+
+  // Load nearby hospitals in red mode with stable polling cadence to avoid UI jitter.
+  useEffect(() => {
+    if (status !== 'red' || !currentPosition) return;
+
+    loadNearbyHospitals();
+    const interval = setInterval(() => {
       loadNearbyHospitals();
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [status, Boolean(currentPosition)]);
+
+  useEffect(() => {
+    if (status !== 'red' || !currentPosition || hospitals.length === 0) return;
+
+    loadHospitalETAs();
+    const interval = setInterval(() => {
       loadHospitalETAs();
-      
-      // Also try to load registered hospital if we have profile but haven't loaded it yet
-      if (profile?.hospital_name && !registeredHospital && !loadingRegisteredHospital) {
-        loadRegisteredHospital(profile.hospital_name);
-      }
-    }
-  }, [status, currentPosition]);
+    }, 45000);
+
+    return () => clearInterval(interval);
+  }, [status, hospitals.length, Boolean(currentPosition)]);
 
   // Load SOS alerts when in GREEN mode
   useEffect(() => {
@@ -339,23 +425,6 @@ export default function AmbulanceDashboard() {
       
       // Sort by distance
       hospitalsWithDistance.sort((a: Hospital, b: Hospital) => (a.distance || 0) - (b.distance || 0));
-      
-      // If we have a registered hospital, make sure it's at the top
-      if (registeredHospital) {
-        // Remove registered hospital if it exists in the list
-        const filtered = hospitalsWithDistance.filter((h: Hospital) => h.id !== registeredHospital.id);
-        // Add registered hospital at the top with updated distance
-        const regHospitalWithDistance = {
-          ...registeredHospital,
-          distance: calculateDistance(
-            currentPosition.lat,
-            currentPosition.lng,
-            registeredHospital.lat,
-            registeredHospital.lng
-          )
-        };
-        hospitalsWithDistance = [regHospitalWithDistance, ...filtered];
-      }
       
       console.log('Found hospitals:', hospitalsWithDistance);
       setHospitals(hospitalsWithDistance);
@@ -506,16 +575,6 @@ export default function AmbulanceDashboard() {
     setSearchSuggestions([]);
   };
 
-  // Save hospital as registered/default
-  const saveAsRegisteredHospital = (hospital: Hospital) => {
-    if (ambulanceId) {
-      localStorage.setItem(`registered_hospital_${ambulanceId}`, JSON.stringify(hospital));
-      setRegisteredHospital(hospital);
-      console.log('✅ Saved as registered hospital:', hospital.name);
-      alert(`✅ ${hospital.name} is now your registered hospital!`);
-    }
-  };
-
   // Navigate to hospital using Google Maps place ID
   const handleNavigate = (hospital: Hospital) => {
     if (!currentPosition) {
@@ -538,6 +597,13 @@ export default function AmbulanceDashboard() {
     }
   };
 
+  // Filter ambulances within 500m of current driver position
+  const ambulancesWithin500m = nearbyAmbulances.filter((ambulance: Ambulance) => {
+    if (!currentPosition) return false;
+    const distance = distanceMeters(currentPosition, { lat: ambulance.lat, lng: ambulance.lng });
+    return distance <= 500; // 500 meters
+  });
+
   const handleStatusChange = async (newStatus: Status) => {
     if (!ambulanceId) return;
 
@@ -558,9 +624,11 @@ export default function AmbulanceDashboard() {
 
   const handleSOS = async () => {
     if (!ambulanceId || !currentPosition) return;
+    setShowSOSReasonModal(true);
+  };
 
-    const confirmed = confirm('Send SOS alert to all available ambulances and control room?');
-    if (!confirmed) return;
+  const handleSendSOS = async (reason: 'signal_issues' | 'traffic_jam' | 'accident') => {
+    if (!ambulanceId || !currentPosition) return;
 
     try {
       await fetch('/api/sos', {
@@ -570,10 +638,14 @@ export default function AmbulanceDashboard() {
           ambulance_id: ambulanceId,
           lat: currentPosition.lat,
           lng: currentPosition.lng,
+          type: 'ambulance',
+          note: `Ambulance SOS: ${reason === 'signal_issues' ? 'Signal Issues' : reason === 'traffic_jam' ? 'Traffic Jam' : 'Accident'}`,
         }),
       });
 
       alert('SOS alert sent successfully!');
+      setShowSOSReasonModal(false);
+      setSosReason(null);
     } catch (error) {
       console.error('Error sending SOS:', error);
       alert('Failed to send SOS');
@@ -587,30 +659,58 @@ export default function AmbulanceDashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="text-2xl text-gray-600">Loading...</div>
+      <div className="min-h-screen bg-gradient-to-br from-red-600 via-blue-700 to-blue-900 flex items-center justify-center">
+        <div className="mx-4 w-full max-w-md rounded-2xl border border-white/25 bg-white/10 p-8 text-center shadow-2xl backdrop-blur-xl">
+          <div className="relative mx-auto mb-6 h-20 w-20">
+            <div className="absolute inset-0 rounded-full bg-gradient-to-r from-red-500 to-blue-600 opacity-90 animate-pulse"></div>
+            <div className="absolute inset-[10px] rounded-full border-4 border-white/90 border-t-transparent animate-spin"></div>
+            <div className="absolute inset-0 flex items-center justify-center text-3xl">🚑</div>
+          </div>
+          <p className="text-2xl font-bold text-white">Loading Dashboard</p>
+          <p className="mt-2 text-sm text-blue-100">Syncing live ambulance data and route systems...</p>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-red-300 animate-pulse"></span>
+            <span className="h-2 w-2 rounded-full bg-white/90 animate-pulse" style={{ animationDelay: '0.15s' }}></span>
+            <span className="h-2 w-2 rounded-full bg-blue-300 animate-pulse" style={{ animationDelay: '0.3s' }}></span>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    <div className="min-h-screen bg-gradient-to-br from-red-600 via-blue-700 to-blue-900 relative overflow-hidden">
+      {/* Animated Background */}
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute -inset-[10px] opacity-40">
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-red-500 rounded-full mix-blend-multiply filter blur-3xl animate-blob"></div>
+          <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-blue-500 rounded-full mix-blend-multiply filter blur-3xl animate-blob animation-delay-2000"></div>
+          <div className="absolute bottom-1/4 left-1/3 w-96 h-96 bg-red-400 rounded-full mix-blend-multiply filter blur-3xl animate-blob animation-delay-4000"></div>
+        </div>
+        {/* Floating Particles */}
+        <div className="absolute inset-0">
+          <div className="absolute top-1/4 left-1/3 w-2 h-2 bg-red-400 rounded-full opacity-60 animate-float"></div>
+          <div className="absolute top-2/3 right-1/4 w-3 h-3 bg-blue-400 rounded-full opacity-40 animate-float animation-delay-2000"></div>
+          <div className="absolute bottom-1/3 left-1/2 w-2 h-2 bg-red-300 rounded-full opacity-50 animate-float animation-delay-4000"></div>
+          <div className="absolute top-1/2 right-1/3 w-2 h-2 bg-blue-300 rounded-full opacity-30 animate-float animation-delay-6000"></div>
+        </div>
+      </div>
       {/* Header */}
-      <header className="bg-white shadow-sm border-b">
+      <header className="relative z-10 bg-white/5 backdrop-blur-xl shadow-lg border-b border-white/10">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">🚑 Ambulance Dashboard</h1>
-            <p className="text-sm text-gray-600">ID: {ambulanceId}</p>
+            <h1 className="text-2xl font-bold text-white">Ambulance Dashboard</h1>
+            <p className="text-sm text-gray-300">ID: {ambulanceId}</p>
           </div>
           <div className="flex items-center gap-4">
-            <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-              gpsEnabled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+            <div className={`px-3 py-1 rounded-full text-sm font-medium backdrop-blur-lg ${
+              gpsEnabled ? 'bg-green-500/30 border border-green-400/50 text-white' : 'bg-red-500/30 border border-red-400/50 text-white'
             }`}>
-              {gpsEnabled ? '📍 GPS Active' : '📍 GPS Inactive'}
+              {gpsEnabled ? 'GPS Active' : 'GPS Inactive'}
             </div>
             <button
               onClick={handleLogout}
-              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+              className="px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 text-white rounded-lg hover:bg-white/20 transition-all"
             >
               Logout
             </button>
@@ -618,87 +718,100 @@ export default function AmbulanceDashboard() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main className="relative z-10 max-w-7xl mx-auto px-4 py-8">
+        {profile && (
+          <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl shadow-lg p-4 mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-white font-semibold">{profile.name}</p>
+              <p className="text-sm text-gray-300">
+                Verification: {String(profile.verification_status || 'pending').toUpperCase()} | Vehicle: {profile.vehicle_no}
+              </p>
+            </div>
+            <div className="text-sm text-gray-300">
+              License: {profile.driving_license_number || 'Not available'}
+            </div>
+          </div>
+        )}
+
         {/* Status Control Panel */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Emergency Status</h2>
+        <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl shadow-lg p-6 mb-6">
+          <h2 className="text-xl font-bold text-white mb-4">Emergency Status</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Red Status */}
             <button
               onClick={() => handleStatusChange('red')}
-              className={`p-6 rounded-xl border-2 transition-all ${
+              className={`p-6 rounded-xl border-2 transition-all backdrop-blur-lg ${
                 status === 'red'
-                  ? 'bg-red-100 border-red-500 shadow-lg scale-105'
-                  : 'bg-white border-gray-200 hover:border-red-300'
+                  ? 'bg-red-500/30 border-red-400/50 shadow-lg scale-105'
+                  : 'bg-white/5 border-white/20 hover:border-red-300/50'
               }`}
             >
-              <div className="text-4xl mb-2">🔴</div>
-              <h3 className="text-lg font-bold text-gray-900 mb-1">RED ALERT</h3>
-              <p className="text-sm text-gray-600">Emergency patient • Send alerts • Navigation</p>
+              <div className="w-8 h-8 mx-auto mb-2 bg-red-500 rounded-full"></div>
+              <h3 className="text-lg font-bold text-white mb-1">RED ALERT</h3>
+              <p className="text-sm text-gray-300">Emergency patient • Send alerts • Navigation</p>
             </button>
 
             {/* Yellow Status */}
             <button
               onClick={() => handleStatusChange('yellow')}
-              className={`p-6 rounded-xl border-2 transition-all ${
+              className={`p-6 rounded-xl border-2 transition-all backdrop-blur-lg ${
                 status === 'yellow'
-                  ? 'bg-yellow-100 border-yellow-500 shadow-lg scale-105'
-                  : 'bg-white border-gray-200 hover:border-yellow-300'
+                  ? 'bg-yellow-500/30 border-yellow-400/50 shadow-lg scale-105'
+                  : 'bg-white/5 border-white/20 hover:border-yellow-300/50'
               }`}
             >
-              <div className="text-4xl mb-2">🟡</div>
-              <h3 className="text-lg font-bold text-gray-900 mb-1">YELLOW</h3>
-              <p className="text-sm text-gray-600">Non-emergency • Navigation • Search any place</p>
+              <div className="w-8 h-8 mx-auto mb-2 bg-yellow-500 rounded-full"></div>
+              <h3 className="text-lg font-bold text-white mb-1">YELLOW</h3>
+              <p className="text-sm text-gray-300">Non-emergency • Navigation • Search any place</p>
             </button>
 
             {/* Green Status */}
             <button
               onClick={() => handleStatusChange('green')}
-              className={`p-6 rounded-xl border-2 transition-all ${
+              className={`p-6 rounded-xl border-2 transition-all backdrop-blur-lg ${
                 status === 'green'
-                  ? 'bg-green-100 border-green-500 shadow-lg scale-105'
-                  : 'bg-white border-gray-200 hover:border-green-300'
+                  ? 'bg-green-500/30 border-green-400/50 shadow-lg scale-105'
+                  : 'bg-white/5 border-white/20 hover:border-green-300/50'
               }`}
             >
-              <div className="text-4xl mb-2">🟢</div>
-              <h3 className="text-lg font-bold text-gray-900 mb-1">GREEN</h3>
-              <p className="text-sm text-gray-600">Available & Free • Monitor other ambulances</p>
+              <div className="w-8 h-8 mx-auto mb-2 bg-green-500 rounded-full"></div>
+              <h3 className="text-lg font-bold text-white mb-1">GREEN</h3>
+              <p className="text-sm text-gray-300">Available & Free • Monitor other ambulances</p>
             </button>
           </div>
         </div>
 
         {/* SOS Button */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+        <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl shadow-lg p-6 mb-6">
           <button
             onClick={handleSOS}
-            className="w-full bg-gradient-to-r from-red-600 to-red-700 text-white py-4 rounded-xl font-bold text-lg hover:from-red-700 hover:to-red-800 transition-all shadow-lg hover:shadow-xl"
+            className="w-full bg-gradient-to-r from-red-500 to-red-600 text-white py-4 rounded-xl font-bold text-lg hover:shadow-lg hover:shadow-red-500/50 transition-all"
           >
-            🆘 SEND SOS ALERT
+            SEND SOS ALERT
           </button>
-          <p className="text-sm text-gray-600 text-center mt-2">
+          <p className="text-sm text-gray-300 text-center mt-2">
             Alert all available ambulances and control room
           </p>
         </div>
 
         {/* Live Traffic Map */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+        <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl shadow-lg p-6 mb-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-bold text-gray-900">🗺️ Live Traffic Map</h2>
+            <h2 className="text-xl font-bold text-white">Live Traffic Map</h2>
             <div className="flex items-center gap-3">
               {selectedHospital && (
                 <button
                   onClick={() => setNavigationVoiceEnabled(!navigationVoiceEnabled)}
-                  className={`px-3 py-1.5 rounded-lg font-semibold text-sm flex items-center gap-1 ${
+                  className={`px-3 py-1.5 rounded-lg font-semibold text-sm flex items-center gap-1 backdrop-blur-lg ${
                     navigationVoiceEnabled 
-                      ? 'bg-green-600 text-white hover:bg-green-700' 
-                      : 'bg-gray-400 text-white hover:bg-gray-500'
+                      ? 'bg-green-500/30 border border-green-400/50 text-white hover:bg-green-500/40' 
+                      : 'bg-gray-500/30 border border-gray-400/50 text-white hover:bg-gray-500/40'
                   }`}
                 >
-                  {navigationVoiceEnabled ? '🔊' : '🔇'}
                   <span className="hidden sm:inline">Navigation Voice</span>
                 </button>
               )}
-              <div className="flex items-center gap-2 text-sm text-gray-600">
+              <div className="flex items-center gap-2 rounded-md bg-white/85 px-3 py-1 text-sm font-medium text-black">
                 {gpsEnabled ? (
                   <>
                     <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
@@ -718,12 +831,13 @@ export default function AmbulanceDashboard() {
             zoom={currentPosition ? 14 : 12}
             currentLocation={currentPosition || undefined}
             hospitals={status === 'red' ? hospitals : []}
-            ambulances={status === 'green' ? nearbyAmbulances : []}
+            ambulances={status === 'green' ? ambulancesWithin500m : []}
             showTraffic={true}
             height="500px"
             selectedHospital={selectedHospital || undefined}
             onRouteCalculated={handleRouteCalculated}
             status={status}
+            routeLocked={isRouteLocked}
           />
           {!currentPosition && (
             <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
@@ -758,9 +872,14 @@ export default function AmbulanceDashboard() {
                   </div>
                 </div>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     setSelectedHospital(null);
                     setRouteData(null);
+                    setIsRouteLocked(false);
+                    selectedHospitalRef.current = null;
+                    routeDataRef.current = null;
+                    isRouteLockedRef.current = false;
+                    await syncLiveRouteState();
                   }}
                   className="text-gray-500 hover:text-gray-700"
                 >
@@ -793,7 +912,18 @@ export default function AmbulanceDashboard() {
               {/* Lock Route Button */}
               {!isRouteLocked ? (
                 <button
-                  onClick={() => setIsRouteLocked(true)}
+                  onClick={async () => {
+                    setIsRouteLocked(true);
+                    isRouteLockedRef.current = true;
+
+                    if (!ambulanceId || !currentPosition) return;
+
+                    try {
+                      await syncLiveRouteState(currentPosition);
+                    } catch (error) {
+                      console.error('Error syncing locked route:', error);
+                    }
+                  }}
                   className="w-full py-3 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-lg font-bold text-base hover:from-green-700 hover:to-green-800 transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-2"
                 >
                   🔒 Lock Route & Start AI Navigation
@@ -822,99 +952,48 @@ export default function AmbulanceDashboard() {
               </button>
             </div>
             
-            {/* DEBUG INFO - Remove this later */}
-            <div className="mb-4 p-3 bg-gray-100 border border-gray-300 rounded text-xs">
-              <p><strong>Debug Info:</strong></p>
-              <p>Profile loaded: {profile ? 'Yes' : 'No'}</p>
-              <p>Hospital name in profile: {profile?.hospital_name || 'Not found'}</p>
-              <p>Registered hospital loaded: {registeredHospital ? 'Yes' : 'No'}</p>
-              <p>Loading registered hospital: {loadingRegisteredHospital ? 'Yes' : 'No'}</p>
-              <p>Current position: {currentPosition ? `${currentPosition.lat.toFixed(4)}, ${currentPosition.lng.toFixed(4)}` : 'Not available'}</p>
-            </div>
-            
-            {/* Quick Select Registered Hospital */}
-            {profile?.hospital_name ? (
-              <div className="mb-4">
-                {loadingRegisteredHospital ? (
-                  <div className="p-4 bg-gray-50 border-2 border-gray-200 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-green-600"></div>
-                      <div>
-                        <p className="text-sm font-semibold text-gray-700">Loading your registered hospital...</p>
-                        <p className="text-xs text-gray-500 mt-1">{profile.hospital_name}</p>
-                      </div>
-                    </div>
+            {/* Favorite Hospitals */}
+            {favoriteHospitals.length > 0 && (
+              <div className="mb-4 p-4 bg-gradient-to-r from-purple-50 to-blue-50 border-2 border-purple-300 rounded-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">⭐</span>
+                    <h3 className="font-bold text-purple-900">Your Favorite Hospitals</h3>
                   </div>
-                ) : registeredHospital ? (
-                  <div className="p-4 bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-400 rounded-lg shadow-md">
-                    <div className="flex items-center justify-between">
+                  <span className="px-2 py-0.5 bg-purple-600 text-white text-xs rounded-full font-semibold">{favoriteHospitals.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {favoriteHospitals.map((hospital) => (
+                    <div key={hospital.id} className="flex items-center justify-between bg-white p-2 rounded-lg border border-purple-200">
                       <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-xl">🏥</span>
-                          <h3 className="font-bold text-green-900 text-base">Your Registered Hospital</h3>
-                          <span className="px-2 py-0.5 bg-green-600 text-white text-xs rounded-full font-semibold">DEFAULT</span>
-                        </div>
-                        <p className="text-sm text-gray-800 font-semibold">{registeredHospital.name}</p>
-                        {registeredHospital.address && (
-                          <p className="text-xs text-gray-600 mt-1">{registeredHospital.address}</p>
-                        )}
-                        {registeredHospital.distance && (
-                          <p className="text-xs text-blue-600 mt-1 font-medium">📍 {registeredHospital.distance.toFixed(1)} km away</p>
-                        )}
+                        <p className="font-semibold text-gray-900">{hospital.name}</p>
+                        <p className="text-xs text-gray-600">{hospital.distance?.toFixed(1)} km away</p>
                       </div>
-                      <button
-                        onClick={() => {
-                          setSelectedHospital(registeredHospital);
-                          // Add to hospitals list if not already there
-                          const exists = hospitals.some(h => h.id === registeredHospital.id);
-                          if (!exists) {
-                            setHospitals(prev => [registeredHospital, ...prev]);
-                          }
-                        }}
-                        className="px-6 py-3 bg-green-600 text-white rounded-lg text-sm font-bold hover:bg-green-700 transition-all shadow-md hover:shadow-lg whitespace-nowrap"
-                      >
-                        ⚡ Quick Select
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="p-4 bg-yellow-50 border-2 border-yellow-200 rounded-lg">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">⚠️</span>
-                      <div>
-                        <p className="text-sm font-semibold text-yellow-800">Waiting for GPS to load your hospital</p>
-                        <p className="text-xs text-yellow-600 mt-1">{profile.hospital_name}</p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setSelectedHospital(hospital)}
+                          className="px-3 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
+                        >
+                          Select
+                        </button>
+                        <button
+                          onClick={() => removeFromFavorites(hospital.id)}
+                          className="px-2 py-1 bg-red-100 text-red-600 rounded text-xs font-medium hover:bg-red-200"
+                        >
+                          ✕
+                        </button>
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="mb-4 p-4 bg-blue-50 border-2 border-blue-300 rounded-lg">
-                <div className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xl">ℹ️</span>
-                      <h3 className="font-bold text-blue-900">No Registered Hospital</h3>
-                    </div>
-                    <p className="text-sm text-blue-800">You registered before the hospital feature was added.</p>
-                    <p className="text-xs text-blue-600 mt-1">Use the search button below to find and select your hospital.</p>
-                  </div>
-                  <button
-                    onClick={() => setShowSearchModal(true)}
-                    className="px-6 py-3 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 transition-all shadow-md hover:shadow-lg whitespace-nowrap"
-                  >
-                    🔍 Find Hospital
-                  </button>
+                  ))}
                 </div>
               </div>
             )}
             
             {hospitals.length > 0 ? (
-              <div className="space-y-3">
+              <div className="space-y-3 max-h-[560px] overflow-auto pr-1">
                 {hospitals.map((hospital) => (
                   <div key={hospital.id} className={`p-4 border-2 rounded-lg transition-colors ${
-                    registeredHospital?.id === hospital.id 
+                    selectedHospital?.id === hospital.id 
                       ? 'border-green-400 bg-green-50' 
                       : 'border-gray-200 hover:bg-gray-50'
                   }`}>
@@ -922,9 +1001,6 @@ export default function AmbulanceDashboard() {
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           <h3 className="font-semibold text-gray-900 text-lg">{hospital.name}</h3>
-                          {registeredHospital?.id === hospital.id && (
-                            <span className="px-2 py-0.5 bg-green-600 text-white text-xs rounded-full font-semibold">DEFAULT</span>
-                          )}
                         </div>
                         {hospital.address && (
                           <p className="text-sm text-gray-600 mt-1">{hospital.address}</p>
@@ -982,13 +1058,13 @@ export default function AmbulanceDashboard() {
                       >
                         {selectedHospital?.id === hospital.id ? '✓ Route Displayed' : '🧭 Show Route'}
                       </button>
-                      {registeredHospital?.id !== hospital.id && (
+                      {!favoriteHospitals.some(h => h.id === hospital.id) && (
                         <button
-                          onClick={() => saveAsRegisteredHospital(hospital)}
-                          className="px-4 py-2 bg-yellow-600 text-white rounded-lg text-sm font-medium hover:bg-yellow-700 transition-colors shadow-sm hover:shadow-md whitespace-nowrap"
-                          title="Set as your default hospital"
+                          onClick={() => addToFavorites(hospital)}
+                          className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors shadow-sm hover:shadow-md whitespace-nowrap"
+                          title="Add to your favorite hospitals"
                         >
-                          ⭐ Set Default
+                          ⭐ Favorite
                         </button>
                       )}
                       {selectedHospital?.id === hospital.id && (
@@ -1139,27 +1215,50 @@ export default function AmbulanceDashboard() {
               </div>
             )}
             
-            {/* Nearby Active Ambulances */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <h2 className="text-xl font-bold text-gray-900 mb-4">🚑 Active Emergency Ambulances</h2>
-              {nearbyAmbulances.length > 0 ? (
+            {/* Nearby Active Ambulances within 500m */}
+            <div className="bg-blue-50 border-2 border-blue-300 rounded-xl shadow-lg p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-blue-900 flex items-center gap-2">
+                  🚑 Ambulances Behind You (Within 500m)
+                </h2>
+                <span className="px-3 py-1 bg-blue-600 text-white rounded-full text-sm font-bold">
+                  {ambulancesWithin500m.length}
+                </span>
+              </div>
+              {ambulancesWithin500m.length > 0 ? (
                 <div className="space-y-3">
-                  {nearbyAmbulances.map((amb) => (
-                    <div key={amb.id} className="p-4 border rounded-lg hover:bg-gray-50 flex items-center justify-between">
-                      <div>
-                        <h3 className="font-semibold text-gray-900">{amb.vehicle_no}</h3>
-                        <p className="text-sm text-gray-600">{amb.name}</p>
+                  {ambulancesWithin500m.map((amb) => {
+                    const distance = distanceMeters(currentPosition || { lat: 13.0827, lng: 80.2707 }, { lat: amb.lat, lng: amb.lng });
+                    return (
+                      <div key={amb.id} className="p-4 bg-white border-2 border-blue-200 rounded-lg hover:shadow-lg transition-all">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <span className="text-2xl">🚑</span>
+                              <h3 className="font-bold text-gray-900 text-lg">{amb.vehicle_no}</h3>
+                            </div>
+                            <p className="text-sm text-gray-600 ml-11">Driver: {amb.name}</p>
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            <div className={`px-3 py-1 rounded-full text-xs font-bold ${
+                              amb.status === 'red' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {amb.status === 'red' ? '🚨 EMERGENCY' : '⚠️ ON DUTY'}
+                            </div>
+                            <span className="text-sm font-bold text-blue-600">
+                              📍 {(distance / 1000).toFixed(2)} km away
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                      <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                        amb.status === 'red' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'
-                      }`}>
-                        {amb.status.toUpperCase()}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
-                <p className="text-gray-600">No active emergency ambulances nearby</p>
+                <div className="p-4 bg-white border-2 border-blue-200 rounded-lg text-center">
+                  <p className="text-lg text-blue-800 font-semibold">✓ No ambulances within 500m</p>
+                  <p className="text-sm text-blue-600 mt-1">You're clear to proceed</p>
+                </div>
               )}
             </div>
           </div>
@@ -1286,6 +1385,80 @@ export default function AmbulanceDashboard() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SOS Reason Modal */}
+      {showSOSReasonModal && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => {
+            setShowSOSReasonModal(false);
+            setSosReason(null);
+          }}
+        >
+          <div
+            className="w-full max-w-4xl rounded-2xl bg-white shadow-2xl border border-gray-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-gray-200 px-6 py-5">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">Report SOS Reason</h2>
+                <p className="text-gray-600 mt-1">Choose what is blocking your ambulance right now.</p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowSOSReasonModal(false);
+                  setSosReason(null);
+                }}
+                className="h-9 w-9 rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="px-6 py-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <button
+                  onClick={() => handleSendSOS('signal_issues')}
+                  className="rounded-xl border-2 border-orange-300 p-5 text-left hover:bg-orange-50 transition-all"
+                >
+                  <div className="text-3xl">🚦</div>
+                  <p className="mt-3 text-lg font-bold text-gray-900">Signal Issues</p>
+                  <p className="text-sm text-gray-600 mt-1">Traffic signal malfunction or signal not clearing.</p>
+                </button>
+
+                <button
+                  onClick={() => handleSendSOS('traffic_jam')}
+                  className="rounded-xl border-2 border-yellow-300 p-5 text-left hover:bg-yellow-50 transition-all"
+                >
+                  <div className="text-3xl">🚗</div>
+                  <p className="mt-3 text-lg font-bold text-gray-900">Traffic Jam</p>
+                  <p className="text-sm text-gray-600 mt-1">Vehicles blocking lane movement for emergency passage.</p>
+                </button>
+
+                <button
+                  onClick={() => handleSendSOS('accident')}
+                  className="rounded-xl border-2 border-red-300 p-5 text-left hover:bg-red-50 transition-all"
+                >
+                  <div className="text-3xl">⚠️</div>
+                  <p className="mt-3 text-lg font-bold text-gray-900">Accident</p>
+                  <p className="text-sm text-gray-600 mt-1">Crash, collision, or emergency obstruction on route.</p>
+                </button>
+              </div>
+
+              <button
+                onClick={() => {
+                  setShowSOSReasonModal(false);
+                  setSosReason(null);
+                }}
+                className="mt-6 w-full rounded-lg bg-gray-100 py-3 font-semibold text-gray-800 hover:bg-gray-200"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

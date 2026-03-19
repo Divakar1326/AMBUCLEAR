@@ -1,19 +1,5 @@
-import Groq from 'groq-sdk';
-
-// Initialize Groq client (free alternative to OpenAI)
-let groq: Groq | null = null;
-
-function getGroqClient() {
-  if (!groq && process.env.GROQ_API_KEY) {
-    groq = new Groq({
-      apiKey: process.env.GROQ_API_KEY,
-    });
-  }
-  return groq;
-}
-
 /**
- * Generate AI-powered voice instruction for emergency alert
+ * Generate deterministic voice instruction for emergency alert.
  * @param context Context data (distance, direction, etc.)
  * @returns Instruction text
  */
@@ -22,36 +8,7 @@ export async function generateVoiceInstruction(context: {
   direction?: string;
   vehicleType?: string;
 }): Promise<string> {
-  const client = getGroqClient();
-
-  // Fallback to rule-based if Groq not configured
-  if (!client) {
-    return generateRuleBasedInstruction(context);
-  }
-
-  try {
-    const response = await client.chat.completions.create({
-      model: 'llama-3.1-8b-instant', // Fast and free Groq model
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are a helpful assistant that generates brief, clear emergency vehicle alert instructions for drivers. Keep instructions under 20 words, calm and actionable.',
-        },
-        {
-          role: 'user',
-          content: `Generate a brief alert instruction for a driver. An ${context.vehicleType || 'ambulance'} is ${Math.round(context.distance)}m away${context.direction ? ` to the ${context.direction}` : ''}. Tell them what to do.`,
-        },
-      ],
-      max_tokens: 50,
-      temperature: 0.7,
-    });
-
-    return response.choices[0]?.message?.content || generateRuleBasedInstruction(context);
-  } catch (error) {
-    console.error('Error generating AI instruction:', error);
-    return generateRuleBasedInstruction(context);
-  }
+  return generateRuleBasedInstruction(context);
 }
 
 /**
@@ -126,5 +83,5 @@ export const INSTRUCTION_TEMPLATES = [
  * Get random instruction template
  */
 export function getRandomInstruction(): string {
-  return INSTRUCTION_TEMPLATES[Math.floor(Math.random() * INSTRUCTION_TEMPLATES.length)];
+  return INSTRUCTION_TEMPLATES[0];
 }

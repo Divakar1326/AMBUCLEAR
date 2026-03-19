@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { updateAmbulance } from '@/lib/firestore';
 import { broadcastAmbulanceUpdate } from '@/lib/websocket';
+import { updateDemoAmbulance } from '@/lib/demoAmbulance';
 
 export async function POST(
   request: NextRequest,
@@ -14,10 +15,17 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid status' }, { status: 400 });
     }
 
-    const updated = updateAmbulance(params.id, {
+    let updated = await updateAmbulance(params.id, {
       status,
       timestamp: new Date().toISOString(),
     });
+
+    if (!updated) {
+      updated = updateDemoAmbulance(params.id, {
+        status,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     if (!updated) {
       return NextResponse.json({ error: 'Ambulance not found' }, { status: 404 });

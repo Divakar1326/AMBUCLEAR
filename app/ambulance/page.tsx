@@ -1,7 +1,16 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Tesseract from 'tesseract.js';
+import {
+  createUserWithEmailAndPassword,
+  deleteUser,
+  signInWithEmailAndPassword,
+  signOut,
+} from 'firebase/auth';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { auth, storage } from '@/lib/firebase';
 
 interface Hospital {
   id: string;
@@ -14,131 +23,249 @@ interface Hospital {
   isOpen?: boolean;
 }
 
+interface RegisterFormState {
+  name: string;
+  email: string;
+  phone: string;
+  vehicle_no: string;
+  service_type: 'government' | 'private' | 'hospital' | '';
+  driving_license_number: string;
+  password: string;
+  confirmPassword: string;
+}
+
+interface LoginFormState {
+  ambulanceId: string;
+  password: string;
+}
+
+interface VerificationResult {
+  extractedText: string;
+  ocrConfidence: number;
+  matchedLicenseNumber: boolean;
+  matchedName: boolean;
+}
+
+const initialRegisterForm: RegisterFormState = {
+  name: '',
+  email: '',
+  phone: '',
+  vehicle_no: '',
+  service_type: '',
+  driving_license_number: '',
+  password: '',
+  confirmPassword: '',
+};
+
+const DEMO_AMBULANCE_ID = 'AMB-TN01AB2026';
+const DEMO_PASSWORD = 'Ambu@12345';
+
+const initialLoginForm: LoginFormState = {
+  ambulanceId: DEMO_AMBULANCE_ID,
+  password: DEMO_PASSWORD,
+};
+
+function createAmbulanceCodePreview(vehicleNumber: string) {
+  const normalizedVehicle = vehicleNumber.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return normalizedVehicle ? `AMB-${normalizedVehicle}` : 'AMB-VEHICLENO';
+}
+
+function normalizeLicenseNumber(value: string) {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function normalizeText(value: string) {
+  return value.toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function downloadRegistrationCredential(payload: {
+  ambulanceId: string;
+  name: string;
+  email: string;
+  vehicleNo: string;
+  hospitalName: string;
+  password: string;
+  verificationStatus: string;
+}) {
+  const content = [
+    'AMBUCLEAR Ambulance Registration',
+    `Ambulance Code: ${payload.ambulanceId}`,
+    `Login Password: ${payload.password}`,
+    `Driver Name: ${payload.name}`,
+    `Email: ${payload.email}`,
+    `Vehicle Number: ${payload.vehicleNo}`,
+    `Hospital: ${payload.hospitalName}`,
+    `Verification Status: ${payload.verificationStatus}`,
+    `Downloaded At: ${new Date().toISOString()}`,
+  ].join('\n');
+
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${payload.ambulanceId}-credential.txt`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function AmbulancePage() {
   const router = useRouter();
   const [isLogin, setIsLogin] = useState(true);
-  const [formData, setFormData] = useState({
-    name: '',
-    phone: '',
-    vehicle_no: '',
-    hospital_name: '',
-  });
-  const [loginId, setLoginId] = useState('');
+  const [registerForm, setRegisterForm] = useState<RegisterFormState>(initialRegisterForm);
+  const [loginForm, setLoginForm] = useState<LoginFormState>(initialLoginForm);
+  const [ambulancePhoto, setAmbulancePhoto] = useState<File | null>(null);
+  const [licensePhoto, setLicensePhoto] = useState<File | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [showHospitalSearch, setShowHospitalSearch] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchSuggestions, setSearchSuggestions] = useState<Hospital[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [currentPosition, setCurrentPosition] = useState<{ lat: number; lng: number } | null>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [ocrStatus, setOcrStatus] = useState('');
 
-  // Check if already logged in
+  const ambulanceCodePreview = useMemo(
+    () => createAmbulanceCodePreview(registerForm.vehicle_no),
+    [registerForm.vehicle_no]
+  );
+
   useEffect(() => {
-    const ambulanceId = localStorage.getItem('ambulance_id');
-    if (ambulanceId) {
+    const savedAmbulanceId = localStorage.getItem('ambulance_id');
+    if (savedAmbulanceId) {
       router.push('/ambulance/dashboard');
-    }
-    // Get current location for hospital search
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setCurrentPosition({
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-          });
-        },
-        (error) => console.log('GPS error:', error)
-      );
+      return;
     }
   }, [router]);
 
-  // Search hospitals with autocomplete
-  const searchHospitalsAutocomplete = async (query: string) => {
-    if (!query || query.length < 2) {
-      setSearchSuggestions([]);
-      setIsSearching(false);
-      return;
-    }
-
-    if (!currentPosition) {
-      return;
-    }
-
-    try {
-      setIsSearching(true);
-      const response = await fetch('/api/hospitals/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, location: currentPosition }),
-      });
-      
-      const data = await response.json();
-      
-      if (data.success && data.hospitals && data.hospitals.length > 0) {
-        setSearchSuggestions(data.hospitals);
-      } else {
-        setSearchSuggestions([]);
-      }
-    } catch (error) {
-      console.error('Error searching hospitals:', error);
-      setSearchSuggestions([]);
-    } finally {
-      setIsSearching(false);
-    }
+  const uploadDocument = async (file: File, path: string) => {
+    const storageRef = ref(storage, path);
+    await uploadBytes(storageRef, file);
+    return getDownloadURL(storageRef);
   };
 
-  // Debounced search
-  const handleSearchChange = (value: string) => {
-    setSearchQuery(value);
-    
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-    
-    if (value.length >= 2) {
-      searchTimeoutRef.current = setTimeout(() => {
-        searchHospitalsAutocomplete(value);
-      }, 300);
-    } else {
-      setSearchSuggestions([]);
-    }
-  };
+  const verifyLicenseDocument = async (file: File, name: string, licenseNumber: string): Promise<VerificationResult> => {
+    setOcrStatus('Reading driving license with OCR...');
+    const result = await Tesseract.recognize(file, 'eng');
+    const extractedText = result.data.text || '';
+    const normalizedExtractedText = normalizeText(extractedText);
+    const normalizedLicense = normalizeLicenseNumber(licenseNumber);
+    const matchedLicenseNumber = normalizedExtractedText.includes(normalizedLicense);
+    const matchedName = normalizeText(name)
+      .split(' ')
+      .filter((token) => token.length >= 3)
+      .some((token) => normalizedExtractedText.includes(token));
 
-  // Select hospital from search
-  const selectHospital = (hospital: Hospital) => {
-    setFormData({ ...formData, hospital_name: hospital.name });
-    setShowHospitalSearch(false);
-    setSearchQuery('');
-    setSearchSuggestions([]);
+    return {
+      extractedText,
+      ocrConfidence: Number(result.data.confidence || 0),
+      matchedLicenseNumber,
+      matchedName,
+    };
   };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
+    setOcrStatus('');
+
+    if (registerForm.password !== registerForm.confirmPassword) {
+      setError('Password and confirm password must match.');
+      setLoading(false);
+      return;
+    }
+
+    if (!registerForm.service_type) {
+      setError('Please select a service type.');
+      setLoading(false);
+      return;
+    }
+
+    if (!ambulancePhoto || !licensePhoto) {
+      setError('Ambulance photo and driving license photo are required.');
+      setLoading(false);
+      return;
+    }
 
     try {
+      const ambulanceCode = createAmbulanceCodePreview(registerForm.vehicle_no);
+      const existingResponse = await fetch(`/api/ambulance/${encodeURIComponent(ambulanceCode)}`);
+      if (existingResponse.ok) {
+        throw new Error(`Ambulance code ${ambulanceCode} already exists for this vehicle.`);
+      }
+
+      const verification = await verifyLicenseDocument(
+        licensePhoto,
+        registerForm.name,
+        registerForm.driving_license_number
+      );
+
+      setOcrStatus('Creating Firebase account...');
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        registerForm.email,
+        registerForm.password
+      );
+
+      const authUid = userCredential.user.uid;
+      const documentBasePath = `ambulance-documents/${authUid}`;
+
+      setOcrStatus('Uploading ambulance documents...');
+      const [ambulancePhotoUrl, drivingLicensePhotoUrl] = await Promise.all([
+        uploadDocument(ambulancePhoto, `${documentBasePath}/ambulance-photo-${Date.now()}-${ambulancePhoto.name}`),
+        uploadDocument(licensePhoto, `${documentBasePath}/driving-license-${Date.now()}-${licensePhoto.name}`),
+      ]);
+
+      setOcrStatus('Saving verified ambulance profile...');
       const response = await fetch('/api/ambulance/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          auth_uid: authUid,
+          email: registerForm.email,
+          name: registerForm.name,
+          phone: registerForm.phone,
+          vehicle_no: registerForm.vehicle_no,
+          service_type: registerForm.service_type,
+          driving_license_number: registerForm.driving_license_number,
+          documents: {
+            ambulance_photo_url: ambulancePhotoUrl,
+            driving_license_photo_url: drivingLicensePhotoUrl,
+          },
+          verification: {
+            extracted_text: verification.extractedText,
+            ocr_confidence: verification.ocrConfidence,
+            matched_license_number: verification.matchedLicenseNumber,
+            matched_name: verification.matchedName,
+          },
+        }),
       });
 
       const data = await response.json();
 
-      if (response.ok) {
-        // Show success message with the generated ID
-        alert(`✅ Registration successful!\n\nYour Ambulance ID is: ${data.id}\n\nPlease save this ID - you'll need it to login.`);
-        localStorage.setItem('ambulance_id', data.id);
-        router.push('/ambulance/dashboard');
-      } else {
-        setError(`❌ Registration failed: ${data.error || 'Please check all fields and try again.'}`);
+      if (!response.ok) {
+        await deleteUser(userCredential.user);
+        await signOut(auth);
+        throw new Error(data.error || 'Registration failed.');
       }
-    } catch (err: any) {
-      setError(`❌ Network error: ${err.message || 'Please try again.'}`);
+
+      localStorage.setItem('ambulance_id', data.id);
+      downloadRegistrationCredential({
+        ambulanceId: data.id,
+        name: registerForm.name,
+        email: registerForm.email,
+        vehicleNo: registerForm.vehicle_no,
+        hospitalName: registerForm.service_type === 'hospital' ? 'Hospital Service' : 
+                      registerForm.service_type === 'government' ? 'Government Service' : 'Private Service',
+        password: registerForm.password,
+        verificationStatus: data.verification_status,
+      });
+
+      alert(
+        `Registration completed.\n\nAmbulance Code: ${data.id}\nLogin Password: ${registerForm.password}\nService Type: ${registerForm.service_type.toUpperCase()}\nVerification: ${data.verification_status.toUpperCase()}\n\nA credential file with your login details has been downloaded automatically.`
+      );
+      router.push('/ambulance/dashboard');
+    } catch (registerError: any) {
+      console.error('Registration error:', registerError);
+      setError(registerError.message || 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
+      setOcrStatus('');
     }
   };
 
@@ -147,43 +274,74 @@ export default function AmbulancePage() {
     setError('');
     setLoading(true);
 
-    if (!loginId.trim()) {
-      setError('Please enter your Ambulance ID');
-      setLoading(false);
-      return;
-    }
-
     try {
-      const response = await fetch(`/api/ambulance/${loginId}`);
+      const ambulanceId = loginForm.ambulanceId.trim().toUpperCase();
+      const password = loginForm.password;
+
+      if (!ambulanceId) {
+        throw new Error('Please enter an ambulance ID.');
+      }
+
+      if (!password) {
+        throw new Error('Please enter your password.');
+      }
+
+      if (ambulanceId === DEMO_AMBULANCE_ID && password === DEMO_PASSWORD) {
+        localStorage.setItem('ambulance_id', DEMO_AMBULANCE_ID);
+        router.push('/ambulance/dashboard');
+        return;
+      }
+
+      const response = await fetch(`/api/ambulance/${encodeURIComponent(ambulanceId)}`);
       const data = await response.json();
 
-      if (response.ok && data.ambulance) {
-        localStorage.setItem('ambulance_id', loginId);
-        router.push('/ambulance/dashboard');
-      } else {
-        // Specific error message based on status code
-        if (response.status === 404) {
-          setError(`❌ Ambulance ID "${loginId}" not found. Please REGISTER first if you're a new user.`);
-        } else {
-          setError(`❌ Login failed: ${data.error || 'Server error. Please try again.'}`);
-        }
+      if (!response.ok || !data.ambulance) {
+        throw new Error(data.error || 'Ambulance profile not found.');
       }
-    } catch (err: any) {
-      setError(`❌ Network error: ${err.message || 'Please check your connection and try again.'}`);
+
+      if (!data.ambulance.email) {
+        throw new Error('This ambulance profile does not have a login email configured yet.');
+      }
+
+      await signInWithEmailAndPassword(auth, data.ambulance.email, password);
+
+      localStorage.setItem('ambulance_id', data.ambulance.id || ambulanceId);
+      router.push('/ambulance/dashboard');
+    } catch (loginError: any) {
+      console.error('Login error:', loginError);
+      setError(loginError.message || 'Login failed.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
+    <div className="min-h-screen bg-gradient-to-br from-red-600 via-blue-700 to-blue-900 relative overflow-hidden flex items-center justify-center p-4">
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute -inset-[10px] opacity-40">
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-red-500 rounded-full mix-blend-multiply filter blur-3xl animate-blob"></div>
+          <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-blue-500 rounded-full mix-blend-multiply filter blur-3xl animate-blob animation-delay-2000"></div>
+          <div className="absolute bottom-1/4 left-1/3 w-96 h-96 bg-red-400 rounded-full mix-blend-multiply filter blur-3xl animate-blob animation-delay-4000"></div>
+        </div>
+        <div className="absolute inset-0">
+          <div className="absolute top-1/4 left-1/3 w-2 h-2 bg-red-400 rounded-full opacity-60 animate-float"></div>
+          <div className="absolute top-2/3 right-1/4 w-3 h-3 bg-blue-400 rounded-full opacity-40 animate-float animation-delay-2000"></div>
+          <div className="absolute bottom-1/3 left-1/2 w-2 h-2 bg-red-300 rounded-full opacity-50 animate-float animation-delay-4000"></div>
+          <div className="absolute top-1/2 right-1/3 w-2 h-2 bg-blue-300 rounded-full opacity-30 animate-float animation-delay-6000"></div>
+        </div>
+      </div>
+
+      <div className="relative z-10 bg-white/5 backdrop-blur-2xl rounded-2xl shadow-2xl max-w-2xl w-full p-8 border border-white/10">
         <div className="text-center mb-8">
-          <div className="text-6xl mb-4">🚑</div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            Ambulance Driver
-          </h1>
-          <p className="text-gray-600">Emergency Vehicle Portal</p>
+          <div className="mb-4 flex justify-center">
+            <div className="w-20 h-20 bg-gradient-to-r from-red-600 to-orange-600 rounded-2xl flex items-center justify-center shadow-lg">
+              <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+              </svg>
+            </div>
+          </div>
+          <h1 className="text-3xl font-bold text-white mb-2">Ambulance Driver</h1>
+          <p className="text-gray-300">Ambulance ID login, document upload, and OCR verification</p>
         </div>
 
         <div className="flex gap-2 mb-6">
@@ -191,8 +349,8 @@ export default function AmbulancePage() {
             onClick={() => setIsLogin(true)}
             className={`flex-1 py-2 rounded-lg font-semibold transition-all ${
               isLogin
-                ? 'bg-red-600 text-white'
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                ? 'bg-gradient-to-r from-red-600 to-orange-600 text-white shadow-lg'
+                : 'bg-white/10 text-gray-300 hover:bg-white/20'
             }`}
           >
             Login
@@ -201,8 +359,8 @@ export default function AmbulancePage() {
             onClick={() => setIsLogin(false)}
             className={`flex-1 py-2 rounded-lg font-semibold transition-all ${
               !isLogin
-                ? 'bg-red-600 text-white'
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                ? 'bg-gradient-to-r from-red-600 to-orange-600 text-white shadow-lg'
+                : 'bg-white/10 text-gray-300 hover:bg-white/20'
             }`}
           >
             Register
@@ -210,106 +368,217 @@ export default function AmbulancePage() {
         </div>
 
         {error && (
-          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+          <div className="bg-red-500/20 border border-red-500/50 backdrop-blur-lg text-red-200 px-4 py-3 rounded-lg mb-4">
             {error}
+          </div>
+        )}
+
+        {ocrStatus && (
+          <div className="bg-blue-500/20 border border-blue-500/50 backdrop-blur-lg text-blue-100 px-4 py-3 rounded-lg mb-4">
+            {ocrStatus}
           </div>
         )}
 
         {isLogin ? (
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Ambulance ID
-              </label>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Ambulance ID</label>
               <input
                 type="text"
-                value={loginId}
-                onChange={(e) => setLoginId(e.target.value)}
-                placeholder="Enter your ambulance ID"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-gray-900 placeholder-gray-400"
+                value={loginForm.ambulanceId}
+                onChange={(e) => setLoginForm((current) => ({ ...current, ambulanceId: e.target.value.toUpperCase() }))}
+                placeholder="AMB-TN01AB1234"
+                className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
                 required
               />
-              <p className="mt-1 text-xs text-gray-500">Don't have an ID? Click Register above</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Password</label>
+              <input
+                type="password"
+                value={loginForm.password}
+                onChange={(e) => setLoginForm((current) => ({ ...current, password: e.target.value }))}
+                placeholder="Enter your registration password"
+                className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
+                required
+              />
+            </div>
+            <div className="rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm text-gray-300">
+              Demo login for testing: <span className="font-semibold text-white">{DEMO_AMBULANCE_ID}</span> / <span className="font-semibold text-white">{DEMO_PASSWORD}</span>
+              <button
+                type="button"
+                onClick={() => setLoginForm({ ambulanceId: DEMO_AMBULANCE_ID, password: DEMO_PASSWORD })}
+                className="ml-3 rounded-md bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-700"
+              >
+                Use Demo Login
+              </button>
             </div>
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-red-600 text-white py-3 rounded-lg font-semibold hover:bg-red-700 transition-colors disabled:opacity-50"
+              className="w-full bg-gradient-to-r from-red-600 to-orange-600 text-white py-3 rounded-lg font-semibold hover:shadow-lg hover:shadow-red-500/50 transition-all disabled:opacity-50"
             >
               {loading ? 'Logging in...' : 'Login'}
             </button>
           </form>
         ) : (
           <form onSubmit={handleRegister} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Full Name
-              </label>
-              <input
-                type="text"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="Enter your name"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-gray-900 placeholder-gray-400"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Phone Number
-              </label>
-              <input
-                type="tel"
-                value={formData.phone}
-                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                placeholder="Enter phone number"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-gray-900 placeholder-gray-400"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Vehicle Number
-              </label>
-              <input
-                type="text"
-                value={formData.vehicle_no}
-                onChange={(e) => setFormData({ ...formData, vehicle_no: e.target.value })}
-                placeholder="e.g., TN-01-AB-1234"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-gray-900 placeholder-gray-400"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Hospital Name
-              </label>
-              <div className="relative">
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Full Name</label>
                 <input
                   type="text"
-                  value={formData.hospital_name}
-                  onClick={() => setShowHospitalSearch(true)}
-                  onChange={(e) => setFormData({ ...formData, hospital_name: e.target.value })}
-                  placeholder="Click to search hospital"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-gray-900 placeholder-gray-400"
+                  value={registerForm.name}
+                  onChange={(e) => setRegisterForm((current) => ({ ...current, name: e.target.value }))}
+                  placeholder="Driver name"
+                  className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
                   required
-                  readOnly
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowHospitalSearch(true)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                >
-                  🔍
-                </button>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Email</label>
+                <input
+                  type="email"
+                  value={registerForm.email}
+                  onChange={(e) => setRegisterForm((current) => ({ ...current, email: e.target.value }))}
+                  placeholder="driver@hospital.com"
+                  className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
+                  required
+                />
               </div>
             </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Phone Number</label>
+                <input
+                  type="tel"
+                  value={registerForm.phone}
+                  onChange={(e) => setRegisterForm((current) => ({ ...current, phone: e.target.value }))}
+                  placeholder="Enter phone number"
+                  className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Vehicle Number</label>
+                <input
+                  type="text"
+                  value={registerForm.vehicle_no}
+                  onChange={(e) => setRegisterForm((current) => ({ ...current, vehicle_no: e.target.value }))}
+                  placeholder="e.g., TN-01-AB-1234"
+                  className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+              Generated ambulance code: <span className="font-semibold text-white">{ambulanceCodePreview}</span>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Service Type</label>
+              <div className="grid grid-cols-3 gap-2">
+                {(['government', 'private', 'hospital'] as const).map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setRegisterForm((current) => ({ ...current, service_type: type }))}
+                    className={`py-3 rounded-lg font-semibold transition-all border ${
+                      registerForm.service_type === type
+                        ? 'bg-red-600 border-red-400 text-white shadow-lg'
+                        : 'bg-white/5 border-white/20 text-gray-300 hover:bg-white/10'
+                    }`}
+                  >
+                    <div className="text-lg mb-1">
+                      {type === 'government' && '🏛️'}
+                      {type === 'private' && '🚑'}
+                      {type === 'hospital' && '🏥'}
+                    </div>
+                    <span className="text-sm capitalize">{type}</span>
+                  </button>
+                ))}
+              </div>
+              {registerForm.service_type && (
+                <p className="text-xs text-gray-400 mt-2">
+                  ✓ {registerForm.service_type === 'government' ? 'Government Ambulance Service' :
+                     registerForm.service_type === 'private' ? 'Private Ambulance Service' :
+                     'Hospital-based Ambulance Service'} selected
+                </p>
+              )}
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Driving License Number</label>
+                <input
+                  type="text"
+                  value={registerForm.driving_license_number}
+                  onChange={(e) => setRegisterForm((current) => ({ ...current, driving_license_number: e.target.value.toUpperCase() }))}
+                  placeholder="Enter license number"
+                  className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Ambulance Photo</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setAmbulancePhoto(e.target.files?.[0] || null)}
+                  className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg text-white file:mr-3 file:rounded-md file:border-0 file:bg-red-600 file:px-3 file:py-1 file:text-white"
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Driving License Photo</label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setLicensePhoto(e.target.files?.[0] || null)}
+                className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg text-white file:mr-3 file:rounded-md file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-white"
+                required
+              />
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Password</label>
+                <input
+                  type="password"
+                  value={registerForm.password}
+                  onChange={(e) => setRegisterForm((current) => ({ ...current, password: e.target.value }))}
+                  placeholder="Create password"
+                  className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Confirm Password</label>
+                <input
+                  type="password"
+                  value={registerForm.confirmPassword}
+                  onChange={(e) => setRegisterForm((current) => ({ ...current, confirmPassword: e.target.value }))}
+                  placeholder="Confirm password"
+                  className="w-full px-4 py-2 bg-white/10 backdrop-blur-lg border border-white/20 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-white placeholder-gray-400"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm text-gray-300">
+              Registration now uses Firebase Authentication, uploads both documents to Firebase Storage, verifies the license image with open-source OCR, and auto-downloads a driver credential file.
+            </div>
+
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-red-600 text-white py-3 rounded-lg font-semibold hover:bg-red-700 transition-colors disabled:opacity-50"
+              className="w-full bg-gradient-to-r from-red-600 to-orange-600 text-white py-3 rounded-lg font-semibold hover:shadow-lg hover:shadow-red-500/50 transition-all disabled:opacity-50"
             >
-              {loading ? 'Registering...' : 'Register'}
+              {loading ? 'Registering...' : 'Register and Verify'}
             </button>
           </form>
         )}
@@ -317,114 +586,12 @@ export default function AmbulancePage() {
         <div className="mt-6 text-center">
           <a
             href="/"
-            className="text-sm text-gray-600 hover:text-gray-900 underline"
+            className="inline-flex items-center gap-2 rounded-full border border-white/35 bg-gradient-to-r from-red-500/90 to-blue-600/90 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-900/30 transition-all hover:from-red-500 hover:to-blue-500 hover:shadow-xl"
           >
             ← Back to Home
           </a>
         </div>
       </div>
-
-      {/* Hospital Search Modal */}
-      {showHospitalSearch && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col">
-            <div className="p-4 border-b flex items-center justify-between">
-              <h3 className="text-xl font-bold text-gray-900">🔍 Search Hospital</h3>
-              <button
-                onClick={() => {
-                  setShowHospitalSearch(false);
-                  setSearchQuery('');
-                  setSearchSuggestions([]);
-                }}
-                className="text-gray-500 hover:text-gray-700 text-2xl"
-              >
-                ×
-              </button>
-            </div>
-            
-            <div className="p-4">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Type hospital name (e.g., Apollo, CMC, Fortis)..."
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-red-500 focus:outline-none text-lg text-gray-900 placeholder-gray-400 bg-white"
-                autoFocus
-              />
-              <p className="text-sm text-gray-500 mt-2">
-                Start typing to see suggestions...
-              </p>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-4">
-              {isSearching ? (
-                <div className="text-center py-12">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>
-                  <p className="text-lg font-semibold text-gray-700">🔍 Searching...</p>
-                  <p className="text-sm text-gray-500 mt-2">Looking for "{searchQuery}"</p>
-                </div>
-              ) : searchSuggestions.length > 0 ? (
-                <div className="space-y-2">
-                  <p className="text-sm text-gray-600 mb-3">
-                    ✅ Found {searchSuggestions.length} hospital{searchSuggestions.length > 1 ? 's' : ''}
-                  </p>
-                  {searchSuggestions.map((hospital) => (
-                    <button
-                      key={hospital.id}
-                      onClick={() => selectHospital(hospital)}
-                      className="w-full p-4 border-2 border-gray-200 rounded-lg hover:border-red-500 hover:bg-red-50 transition-all text-left"
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <h4 className="font-bold text-gray-900 text-lg">🏥 {hospital.name}</h4>
-                          <p className="text-sm text-gray-600 mt-1">{hospital.address}</p>
-                          <div className="flex items-center gap-4 mt-2">
-                            <span className="text-sm font-medium text-blue-600">
-                              📍 {hospital.distance?.toFixed(2)} km away
-                            </span>
-                            {hospital.rating && (
-                              <span className="text-sm text-yellow-600">
-                                ⭐ {hospital.rating.toFixed(1)}
-                              </span>
-                            )}
-                            {hospital.isOpen !== undefined && (
-                              <span className={`text-xs px-2 py-1 rounded ${hospital.isOpen ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                {hospital.isOpen ? '● Open' : '● Closed'}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="text-red-600 font-bold text-xl ml-4">→</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : searchQuery.length >= 2 && !isSearching ? (
-                <div className="text-center py-12 text-gray-500">
-                  <p className="text-6xl mb-4">🏥</p>
-                  <p className="text-lg font-semibold">No hospitals found</p>
-                  <p className="text-sm mt-2">Try searching with different keywords</p>
-                </div>
-              ) : (
-                <div className="text-center py-12 text-gray-400">
-                  <p className="text-6xl mb-4">🔍</p>
-                  <p className="text-lg font-semibold">Start typing to search</p>
-                  <p className="text-sm mt-2">Type at least 2 characters</p>
-                  <div className="mt-6 text-left max-w-sm mx-auto">
-                    <p className="text-xs text-gray-500 mb-2">💡 Examples:</p>
-                    <ul className="text-xs text-gray-500 space-y-1">
-                      <li>• Apollo Hospital</li>
-                      <li>• CMC Vellore</li>
-                      <li>• Fortis</li>
-                      <li>• Government Hospital</li>
-                    </ul>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

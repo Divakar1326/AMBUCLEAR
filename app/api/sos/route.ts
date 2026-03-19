@@ -16,7 +16,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { ambulance_id, lat, lng } = body;
+    const { ambulance_id, lat, lng, type, note } = body;
 
     if (!ambulance_id || typeof lat !== 'number' || typeof lng !== 'number') {
       return NextResponse.json({ error: 'Invalid data' }, { status: 400 });
@@ -31,6 +31,8 @@ export async function POST(request: NextRequest) {
       lng,
       active: true,
       timestamp: new Date().toISOString(),
+      type: type || 'ambulance',
+      note: note || '',
     };
 
     createSOS(sosRecord);

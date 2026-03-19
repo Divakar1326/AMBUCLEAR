@@ -1,5 +1,7 @@
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
+import { getAuth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 
 // Firebase configuration - you'll add your credentials in .env.local
 const firebaseConfig = {
@@ -21,5 +23,7 @@ if (!getApps().length) {
 
 // Initialize Firestore
 export const db = getFirestore(app);
+export const auth = getAuth(app);
+export const storage = getStorage(app);
 
 export default app;

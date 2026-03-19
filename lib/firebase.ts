@@ -3,14 +3,30 @@ import { getAuth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
+function sanitizeEnvValue(value?: string): string {
+  if (!value) return '';
+
+  // Handles accidental wrapping quotes copied from dashboards.
+  const trimmed = value.trim();
+  const withoutWrappingQuotes = trimmed.replace(/^['\"]|['\"]$/g, '');
+
+  // Recover API keys from accidental prefixes like: yo "AIza..."
+  const apiKeyMatch = withoutWrappingQuotes.match(/AIza[0-9A-Za-z_-]+/);
+  if (apiKeyMatch) {
+    return apiKeyMatch[0];
+  }
+
+  return withoutWrappingQuotes;
+}
+
 // Firebase configuration - you'll add your credentials in .env.local
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  apiKey: sanitizeEnvValue(process.env.NEXT_PUBLIC_FIREBASE_API_KEY),
+  authDomain: sanitizeEnvValue(process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN),
+  projectId: sanitizeEnvValue(process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID),
+  storageBucket: sanitizeEnvValue(process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET),
+  messagingSenderId: sanitizeEnvValue(process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID),
+  appId: sanitizeEnvValue(process.env.NEXT_PUBLIC_FIREBASE_APP_ID),
 };
 
 // Initialize Firebase (client-side safe)

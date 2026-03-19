@@ -5,6 +5,7 @@ import type { AmbulanceProfile } from './firestore';
 export const DEMO_AMBULANCE_ID = 'AMB-TN01AB2026';
 
 const DEMO_FILE = path.join(process.cwd(), 'data', 'demo_ambulance_state.json');
+let inMemoryDemoState: AmbulanceProfile | null = null;
 
 const DEMO_AMBULANCE_FALLBACK: AmbulanceProfile = {
   id: DEMO_AMBULANCE_ID,
@@ -42,6 +43,10 @@ function ensureDemoFile() {
 }
 
 function readDemoState(): AmbulanceProfile {
+  if (inMemoryDemoState) {
+    return { ...DEMO_AMBULANCE_FALLBACK, ...inMemoryDemoState };
+  }
+
   try {
     ensureDemoFile();
     const raw = fs.readFileSync(DEMO_FILE, 'utf-8');
@@ -53,8 +58,15 @@ function readDemoState(): AmbulanceProfile {
 }
 
 function writeDemoState(state: AmbulanceProfile) {
-  ensureDemoFile();
-  fs.writeFileSync(DEMO_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  inMemoryDemoState = state;
+
+  try {
+    ensureDemoFile();
+    fs.writeFileSync(DEMO_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  } catch {
+    // Vercel/serverless filesystems are often read-only at runtime.
+    // Keep demo state in memory so APIs can still respond successfully.
+  }
 }
 
 export function getDemoAmbulanceById(id: string): AmbulanceProfile | null {
